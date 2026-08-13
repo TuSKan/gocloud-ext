@@ -60,7 +60,7 @@ func openTestBucket(t *testing.T, opts *Options) (*blob.Bucket, *bucket) {
 		t.Fatal(err)
 	}
 	b := blob.NewBucket(drv)
-	t.Cleanup(func() { b.Close() })
+	t.Cleanup(func() { _ = b.Close() })
 	return b, drv
 }
 
@@ -178,7 +178,7 @@ func TestInternalPathsHidden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	got := listKeys(ctx, t, b, nil)
 	want := []string{"a.txt", "dir/b.txt"}
@@ -336,7 +336,7 @@ func TestCallerOwnsClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 
 	if err := second.WriteAll(ctx, "blob.txt", []byte("hello"), nil); err != nil {
 		t.Fatal(err)
@@ -402,7 +402,7 @@ func TestReaderClosesOnSeekFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := io.ReadAll(r)
-	r.Close()
+	_ = r.Close()
 	if err != nil {
 		t.Fatal(err)
 	}

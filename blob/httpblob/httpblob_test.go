@@ -172,8 +172,8 @@ func (h *externalHarness) request(ctx context.Context, method, url string) error
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("%s %s: %s", method, url, resp.Status)
 	}
@@ -306,7 +306,7 @@ func openReadOnly(t *testing.T, srv *httptest.Server) *blob.Bucket {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.Close() })
+	t.Cleanup(func() { _ = b.Close() })
 	return b
 }
 
@@ -341,7 +341,7 @@ func TestReadOnlyRead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer r.Close()
+			defer func() { _ = r.Close() }()
 			got, err := io.ReadAll(r)
 			if err != nil {
 				t.Fatal(err)
@@ -440,7 +440,7 @@ func TestServerIgnoresRange(t *testing.T) {
 		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
 		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, content)
+		_, _ = io.WriteString(w, content)
 	}))
 	defer srv.Close()
 	b := openReadOnly(t, srv)
@@ -459,7 +459,7 @@ func TestServerIgnoresRange(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, err := io.ReadAll(r)
-		r.Close()
+		_ = r.Close()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -485,7 +485,7 @@ func TestHeadNotAllowed(t *testing.T) {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-0/%d", len(content)))
 		w.Header().Set("Content-Length", "1")
 		w.WriteHeader(http.StatusPartialContent)
-		io.WriteString(w, content[:1])
+		_, _ = io.WriteString(w, content[:1])
 	}))
 	defer srv.Close()
 	b := openReadOnly(t, srv)
@@ -514,7 +514,7 @@ func TestResumeAfterDroppedConnection(t *testing.T) {
 			// Promise the whole body, then die after a few bytes.
 			w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, content[:5])
+			_, _ = io.WriteString(w, content[:5])
 			w.(http.Flusher).Flush()
 			panic(http.ErrAbortHandler)
 		}
@@ -522,7 +522,7 @@ func TestResumeAfterDroppedConnection(t *testing.T) {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, len(content)-1, len(content)))
 		w.Header().Set("Content-Length", strconv.Itoa(len(content)-int(start)))
 		w.WriteHeader(http.StatusPartialContent)
-		io.WriteString(w, content[start:])
+		_, _ = io.WriteString(w, content[start:])
 	}))
 	srv.Config.ErrorLog = quietLogger()
 	defer srv.Close()
@@ -554,7 +554,7 @@ func TestResumeRefusedWhenObjectChanged(t *testing.T) {
 			w.Header().Set("ETag", `"v1"`)
 			w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, content[:5])
+			_, _ = io.WriteString(w, content[:5])
 			w.(http.Flusher).Flush()
 			panic(http.ErrAbortHandler)
 		}
@@ -563,7 +563,7 @@ func TestResumeRefusedWhenObjectChanged(t *testing.T) {
 		w.Header().Set("ETag", `"v2"`)
 		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, strings.ToUpper(content))
+		_, _ = io.WriteString(w, strings.ToUpper(content))
 	}))
 	srv.Config.ErrorLog = quietLogger()
 	defer srv.Close()
@@ -599,7 +599,7 @@ func TestRetrySafeMethod(t *testing.T) {
 		}
 		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
 		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-		io.WriteString(w, content)
+		_, _ = io.WriteString(w, content)
 	}))
 	defer srv.Close()
 	b := openReadOnly(t, srv)
@@ -631,7 +631,7 @@ func TestRetryExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	_, err = b.ReadAll(ctx, "blob.txt")
 	if gcerrors.Code(err) != gcerrors.Internal {
@@ -650,7 +650,7 @@ func TestWritesAreNotRetried(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {
 			puts.Add(1)
-			io.Copy(io.Discard, r.Body)
+			_, _ = io.Copy(io.Discard, r.Body)
 			http.Error(w, "broken", http.StatusServiceUnavailable)
 			return
 		}
@@ -663,7 +663,7 @@ func TestWritesAreNotRetried(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	if err := b.WriteAll(ctx, "blob.txt", []byte("data"), nil); err == nil {
 		t.Fatal("got nil error, want the server's 503")
@@ -687,7 +687,7 @@ func openWebDAV(t *testing.T, srv *httptest.Server, opts *Options) *blob.Bucket 
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.Close() })
+	t.Cleanup(func() { _ = b.Close() })
 	return b
 }
 
@@ -767,7 +767,7 @@ func TestMissingBucketRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	err = b.WriteAll(ctx, "blob.txt", []byte("hello"), nil)
 	if err == nil {
@@ -875,14 +875,14 @@ func proxyTo(t *testing.T, w http.ResponseWriter, r *http.Request, target string
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // countingProxy forwards to inner while tallying requests by method, so tests
@@ -1079,7 +1079,7 @@ func TestAuth(t *testing.T) {
 		got = r.Header.Clone()
 		mu.Unlock()
 		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
-		io.WriteString(w, "hi")
+		_, _ = io.WriteString(w, "hi")
 	}))
 	defer srv.Close()
 	ctx := context.Background()
@@ -1133,7 +1133,7 @@ func TestAuth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer b.Close()
+			defer func() { _ = b.Close() }()
 			if _, err := b.ReadAll(ctx, "blob.txt"); err != nil {
 				t.Fatal(err)
 			}
@@ -1155,7 +1155,7 @@ func TestAuth(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 		if _, err := b.ReadAll(ctx, "blob.txt"); err != nil {
 			t.Fatal(err)
 		}
@@ -1183,7 +1183,7 @@ func TestTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rw.Close()
+	defer func() { _ = rw.Close() }()
 	if err := rw.WriteAll(ctx, "dir/blob.txt", []byte("over TLS"), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1200,7 +1200,7 @@ func TestTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ro.Close()
+	defer func() { _ = ro.Close() }()
 	if got, err = ro.ReadAll(ctx, "dir/blob.txt"); err != nil {
 		t.Fatal(err)
 	}
@@ -1228,7 +1228,7 @@ func TestChunkedResponseSize(t *testing.T) {
 		// makes net/http fall back to chunked encoding with no Content-Length.
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		io.WriteString(w, content)
+		_, _ = io.WriteString(w, content)
 	}))
 	defer srv.Close()
 	b := openReadOnly(t, srv)
@@ -1238,7 +1238,7 @@ func TestChunkedResponseSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	got, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
@@ -1260,7 +1260,7 @@ func TestCollectionIsNotABlob(t *testing.T) {
 		if r.Method == methodPropfind {
 			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 			w.WriteHeader(http.StatusMultiStatus)
-			fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?>
+			_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:"><D:response><D:href>%s</D:href><D:propstat><D:prop>
 <D:resourcetype><D:collection/></D:resourcetype>
 </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>`, r.URL.Path)
@@ -1268,7 +1268,7 @@ func TestCollectionIsNotABlob(t *testing.T) {
 		}
 		// Apache would serve the directory index here, with a 200.
 		w.Header().Set("Content-Type", "text/html")
-		io.WriteString(w, "<html><body>Index of /someDir</body></html>")
+		_, _ = io.WriteString(w, "<html><body>Index of /someDir</body></html>")
 	}))
 	defer srv.Close()
 	b := openWebDAV(t, srv, nil)
@@ -1303,7 +1303,7 @@ func TestCollectionRedirect(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "text/html")
-		io.WriteString(w, "<html><body>Index of /someDir</body></html>")
+		_, _ = io.WriteString(w, "<html><body>Index of /someDir</body></html>")
 	}))
 	defer srv.Close()
 	b := openWebDAV(t, srv, nil)
@@ -1332,7 +1332,7 @@ func TestCollectionRedirect(t *testing.T) {
 func writeMultiStatus(w http.ResponseWriter, href string, size int, contentType string) {
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)
-	fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?>
+	_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:"><D:response><D:href>%s</D:href><D:propstat><D:prop>
 <D:resourcetype/>
 <D:getcontentlength>%d</D:getcontentlength>
@@ -1357,12 +1357,12 @@ func TestUnreadableSidecar(t *testing.T) {
 		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
 		if strings.HasSuffix(r.URL.Path, attrsExt) {
 			w.Header().Set("Content-Type", "text/html")
-			io.WriteString(w, "<html><body>Sorry, page not found!</body></html>")
+			_, _ = io.WriteString(w, "<html><body>Sorry, page not found!</body></html>")
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-		io.WriteString(w, content)
+		_, _ = io.WriteString(w, content)
 	}))
 	defer srv.Close()
 	b := openWebDAV(t, srv, nil)
@@ -1444,7 +1444,7 @@ func TestLargeBlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	part, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
@@ -1473,7 +1473,7 @@ func TestLargeBlobResume(t *testing.T) {
 		if n == 1 {
 			w.Header().Set("Content-Length", strconv.Itoa(size))
 			w.WriteHeader(http.StatusOK)
-			w.Write(content[:cut])
+			_, _ = w.Write(content[:cut])
 			w.(http.Flusher).Flush()
 			panic(http.ErrAbortHandler)
 		}
@@ -1481,7 +1481,7 @@ func TestLargeBlobResume(t *testing.T) {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, size-1, size))
 		w.Header().Set("Content-Length", strconv.FormatInt(int64(size)-start, 10))
 		w.WriteHeader(http.StatusPartialContent)
-		w.Write(content[start:])
+		_, _ = w.Write(content[start:])
 	}))
 	srv.Config.ErrorLog = quietLogger()
 	defer srv.Close()
@@ -1656,7 +1656,7 @@ func TestOpenBucketFromURL(t *testing.T) {
 	} {
 		b, err := blob.OpenBucket(context.Background(), tc.url)
 		if b != nil {
-			b.Close()
+			_ = b.Close()
 		}
 		if (err != nil) != tc.wantErr {
 			t.Errorf("%s: got error %v, want error %v", tc.url, err, tc.wantErr)
@@ -1676,7 +1676,7 @@ func TestDefaultClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	got, err := b.ReadAll(ctx, "blob.txt")
 	if err != nil {

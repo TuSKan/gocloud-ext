@@ -40,7 +40,7 @@ func ExampleOpenBucket() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer sshClient.Close()
+	defer func() { _ = sshClient.Close() }()
 
 	// Initialize the SFTP client
 	sftpClient, err := sftp.NewClient(sshClient)
@@ -53,7 +53,7 @@ func ExampleOpenBucket() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer bucket.Close()
+	defer func() { _ = bucket.Close() }()
 
 	// Use bucket
 	ctx := context.Background()
@@ -72,7 +72,7 @@ func Example_openBucketFromURL() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	// Now we can use b to read or write files to the remote container.
 	err = b.WriteAll(ctx, "my-key", []byte("hello world"), nil)

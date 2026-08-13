@@ -479,7 +479,7 @@ func errorf(code gcerrors.ErrorCode, err error, format string, args ...any) *Err
 // body.
 func newError(req *http.Request, resp *http.Response) *Error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return &Error{
 		Method:     req.Method,
 		URL:        req.URL.String(),
@@ -912,7 +912,7 @@ func (b *bucket) headObject(ctx context.Context, objURL string) (http.Header, in
 		return b.newRequest(ctx, http.MethodHead, objURL, nil)
 	})
 	if err == nil {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if size := contentLength(resp); size >= 0 {
 			return resp.Header, size, nil
 		}
@@ -947,7 +947,7 @@ func (b *bucket) headObject(ctx context.Context, objURL string) (http.Header, in
 		// implementation detail.
 		return nil, 0, err
 	}
-	defer rangeResp.Body.Close()
+	defer func() { _ = rangeResp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, rangeResp.Body)
 
 	header := rangeResp.Header
@@ -1115,13 +1115,13 @@ func (b *bucket) NewRangeReader(ctx context.Context, key string, offset, length 
 		return nil, withKey(notReadable(err), key)
 	}
 	if xaErr != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, withKey(xaErr, key)
 	}
 
 	body, size, err := sliceBody(resp, offset, length)
 	if err != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, withKey(err, key)
 	}
 	if size < 0 {
@@ -1315,10 +1315,10 @@ func (r *reader) resume() error {
 	// If-Range makes the server answer 200 with the whole entity when the
 	// object has changed. Continuing would splice two versions together.
 	if resp.StatusCode != http.StatusPartialContent {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return fmt.Errorf("httpblob: cannot resume read of %q: object changed", r.key)
 	}
-	prev.Close()
+	_ = prev.Close()
 
 	var body io.Reader = resp.Body
 	if r.remaining > 0 {
@@ -1405,7 +1405,7 @@ func (b *bucket) NewTypedWriter(ctx context.Context, key, contentType string, op
 			pr.CloseWithError(err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode >= 400 {
 			w.putErr = newError(req, resp)
 			pr.CloseWithError(w.putErr)
@@ -1464,7 +1464,7 @@ func (w *writer) Close() error {
 		w.cleanup()
 		return err
 	}
-	w.pw.Close()
+	_ = w.pw.Close()
 	<-w.donec
 
 	if err := w.ctx.Err(); err != nil {
@@ -1559,7 +1559,7 @@ func (b *bucket) Delete(ctx context.Context, key string, opts *driver.DeleteOpti
 	if err != nil {
 		return withKey(err, key)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if b.useSidecar() {
 		b.deleteURL(ctx, objURL+attrsExt)
@@ -1574,7 +1574,7 @@ func (b *bucket) deleteURL(ctx context.Context, rawURL string) {
 		return b.newRequest(ctx, http.MethodDelete, rawURL, nil)
 	})
 	if err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 }
 

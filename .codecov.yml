@@ -1,0 +1,19 @@
+# Mirrors go-cloud's .codecov.yml. Coverage is reported for information, not
+# as a gate: target 0 means a drop never fails a build.
+codecov:
+  # Set via secrets, see .github/workflows/ci.yml.
+  token: ""
+ignore:
+  - "**/*_test.go"
+coverage:
+  status:
+    project:
+      default:
+        target: 0
+        threshold: null
+        base: auto
+    patch:
+      default:
+        target: 0
+        threshold: null
+        base: auto

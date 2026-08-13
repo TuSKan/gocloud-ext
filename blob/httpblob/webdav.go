@@ -147,7 +147,7 @@ func (b *bucket) propfind(ctx context.Context, rawURL, depth string, before func
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var ms multistatus
 	if err := xml.NewDecoder(resp.Body).Decode(&ms); err != nil {

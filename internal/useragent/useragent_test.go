@@ -46,7 +46,7 @@ func TestHTTPClient(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if want := userAgentString("blob"); !strings.Contains(gotUserAgent, want) {
 				t.Errorf("got User-Agent %q, want it to contain %q", gotUserAgent, want)
 			}

@@ -376,17 +376,17 @@ func TestOpenBucketURL(t *testing.T) {
 func TestOpenBucket(t *testing.T) {
 	clientConn, serverConn := netPipe()
 	server, _ := sftp.NewServer(serverConn)
-	go server.Serve()
+	go func() { _ = server.Serve() }()
 	client, _ := sftp.NewClientPipe(clientConn, clientConn)
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 
 	// Should succeed
 	bkt, err := OpenBucket(client, ".", nil)
 	if err != nil {
 		t.Fatalf("OpenBucket: %v", err)
 	}
-	defer bkt.Close()
+	defer func() { _ = bkt.Close() }()
 
 	opts := &Options{CreateDir: true}
 	_, err = OpenBucket(client, "newdir", opts)

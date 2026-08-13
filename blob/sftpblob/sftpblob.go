@@ -662,7 +662,7 @@ func getAttrs(ctx context.Context, client *sftp.Client, fullPath string) (xattrs
 		}
 		return xattrs{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	xa := new(xattrs)
 	err = json.NewDecoder(f).Decode(xa)
 	return *xa, err
@@ -677,8 +677,8 @@ func setAttrs(ctx context.Context, client *sftp.Client, fullPath string, xa xatt
 		return err
 	}
 	if err := json.NewEncoder(f).Encode(xa); err != nil {
-		f.Close()
-		client.Remove(f.Name())
+		_ = f.Close()
+		_ = client.Remove(f.Name())
 		return err
 	}
 	return f.Close()
@@ -774,14 +774,14 @@ func (b *bucket) NewRangeReader(ctx context.Context, key string, offset, length 
 			}
 			return false
 		}); err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, err
 		}
 	}
 
 	if offset > 0 {
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, err
 		}
 	}
@@ -876,9 +876,9 @@ func (b *bucket) NewTypedWriter(ctx context.Context, key, contentType string, op
 			}
 			return false
 		}); err != nil {
-			f.Close()
+			_ = f.Close()
 			if tempPath != "" {
-				b.client.Remove(tempPath)
+				_ = b.client.Remove(tempPath)
 			}
 			return nil, err
 		}
@@ -981,7 +981,7 @@ func (w *writer) Close() error {
 	removeTmp := true
 	defer func() {
 		if removeTmp {
-			w.client.Remove(w.tmp)
+			_ = w.client.Remove(w.tmp)
 		}
 	}()
 
@@ -1058,8 +1058,8 @@ func (w *writerWithSidecar) Close() error {
 	removeTmp := true
 	defer func() {
 		if removeTmp {
-			w.client.Remove(w.tmp + attrsExt)
-			w.client.Remove(w.tmp)
+			_ = w.client.Remove(w.tmp + attrsExt)
+			_ = w.client.Remove(w.tmp)
 		}
 	}()
 
@@ -1109,7 +1109,7 @@ func (b *bucket) Copy(ctx context.Context, dstKey, srcKey string, opts *driver.C
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	if opts.BeforeCopy != nil {
 		if err := opts.BeforeCopy(func(i any) bool {
@@ -1133,8 +1133,8 @@ func (b *bucket) Copy(ctx context.Context, dstKey, srcKey string, opts *driver.C
 	}
 
 	if err := ctx.Err(); err != nil {
-		dstFile.Close()
-		b.client.Remove(tempPath)
+		_ = dstFile.Close()
+		_ = b.client.Remove(tempPath)
 		return err
 	}
 
@@ -1144,7 +1144,7 @@ func (b *bucket) Copy(ctx context.Context, dstKey, srcKey string, opts *driver.C
 		err = errClose
 	}
 	if err != nil {
-		b.client.Remove(tempPath)
+		_ = b.client.Remove(tempPath)
 		return err
 	}
 
@@ -1152,11 +1152,11 @@ func (b *bucket) Copy(ctx context.Context, dstKey, srcKey string, opts *driver.C
 	if b.opts.Metadata != MetadataDontWrite {
 		xa, err := getAttrs(ctx, b.client, srcPath)
 		if err != nil {
-			b.client.Remove(tempPath)
+			_ = b.client.Remove(tempPath)
 			return err
 		}
 		if err := setAttrs(ctx, b.client, tempPath, xa); err != nil {
-			b.client.Remove(tempPath)
+			_ = b.client.Remove(tempPath)
 			return err
 		}
 		wroteSidecar = true
@@ -1167,7 +1167,7 @@ func (b *bucket) Copy(ctx context.Context, dstKey, srcKey string, opts *driver.C
 		if wroteSidecar {
 			_ = b.client.Remove(tempPath + attrsExt)
 		}
-		b.client.Remove(tempPath)
+		_ = b.client.Remove(tempPath)
 		return err
 	}
 

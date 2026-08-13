@@ -89,7 +89,7 @@ func newExternalHarness(ctx context.Context, t *testing.T) (drivertest.Harness, 
 	// longer closes a client it did not create.
 	var client *sftp.Client
 	if !b.As(&client) {
-		b.Close()
+		_ = b.Close()
 		return nil, fmt.Errorf("sftpblob: Bucket.As failed for **sftp.Client")
 	}
 	return &externalHarness{owner: b, client: client, dir: u.Path}, nil

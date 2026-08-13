@@ -66,7 +66,7 @@ func (b *bucket) getAttrs(ctx context.Context, objURL string) (xattrs, error) {
 		}
 		return xattrs{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var xa xattrs
 	// The sidecar is written by us and is small; cap the read so a

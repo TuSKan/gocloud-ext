@@ -53,6 +53,55 @@ jobs:
             (cd "$dir" && go vet ./...)
           done
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # required for codecov
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+      - name: Collect coverage for every module
+        run: |
+          set -euo pipefail
+          : > "$GITHUB_WORKSPACE/coverage.out"
+          sed -e '/^#/d' -e '/^$/d' allmodules | awk '{print $1}' | while read -r dir; do
+            (cd "$dir" && go test ./... -coverprofile=cover.tmp -covermode=atomic)
+            # Keep one mode line across the merged profile.
+            tail -n +2 "$dir/cover.tmp" >> "$GITHUB_WORKSPACE/coverage.out" || true
+            rm -f "$dir/cover.tmp"
+          done
+          sed -i '1i mode: atomic' "$GITHUB_WORKSPACE/coverage.out"
+      - uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.out
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Coverage is informational; a reporting outage must not fail CI.
+          fail_ci_if_error: false
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Nested modules are linted separately; golangci-lint works on one
+        # module at a time. Keep in sync with allmodules.
+        module: [".", "blob/httpblob", "blob/sftpblob"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12
+          working-directory: ${{ matrix.module }}
+
   interop:
     name: WebDAV interop (${{ matrix.server }})
     runs-on: ubuntu-latest
