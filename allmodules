@@ -9,3 +9,4 @@
 # module-directory           released
 .                            yes
 blob/httpblob                yes
+blob/sftpblob                yes

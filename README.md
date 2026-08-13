@@ -17,6 +17,7 @@ conformance suite the in-tree drivers pass.
 | module | schemes | what it does |
 |---|---|---|
 | [`blob/httpblob`](blob/httpblob) | `http`, `https`, `webdav`, `webdavs` | Blob storage over plain HTTP (read-only) or WebDAV (read-write) |
+| [`blob/sftpblob`](blob/sftpblob) | `sftp` | Blob storage over SFTP |
 
 ## Usage
 
