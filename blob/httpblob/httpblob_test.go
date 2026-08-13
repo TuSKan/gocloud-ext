@@ -1212,6 +1212,90 @@ func TestTLS(t *testing.T) {
 	}
 }
 
+// TestChunkedResponseSize covers a server that streams the body with chunked
+// transfer encoding and therefore sends no Content-Length. rclone's WebDAV
+// server does this, and reporting Size 0 for a 27-byte blob broke every caller
+// that trusts Reader.Size.
+func TestChunkedResponseSize(t *testing.T) {
+	const content = "abcdefghijklmnopqurstuvwxyz"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+		if r.Method == http.MethodHead {
+			w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+			return
+		}
+		// Flushing commits the headers before the body is known, which is what
+		// makes net/http fall back to chunked encoding with no Content-Length.
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		io.WriteString(w, content)
+	}))
+	defer srv.Close()
+	b := openReadOnly(t, srv)
+	ctx := context.Background()
+
+	r, err := b.NewRangeReader(ctx, "blob.txt", 0, -1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("got %q want %q", got, content)
+	}
+	if r.Size() != int64(len(content)) {
+		t.Errorf("got Size %d want %d", r.Size(), len(content))
+	}
+}
+
+// TestCollectionIsNotABlob covers Apache mod_dav, which serves a collection as
+// a readable HTTP resource — an autoindex with 200, or 403 under
+// "Options -Indexes". Neither means the key names a blob, and only
+// resourcetype settles it, which is why Attributes stats with PROPFIND.
+func TestCollectionIsNotABlob(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == methodPropfind {
+			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+			w.WriteHeader(http.StatusMultiStatus)
+			fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:"><D:response><D:href>%s</D:href><D:propstat><D:prop>
+<D:resourcetype><D:collection/></D:resourcetype>
+</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>`, r.URL.Path)
+			return
+		}
+		// Apache would serve the directory index here, with a 200.
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, "<html><body>Index of /someDir</body></html>")
+	}))
+	defer srv.Close()
+	b := openWebDAV(t, srv, nil)
+
+	_, err := b.Attributes(context.Background(), "someDir")
+	if gcerrors.Code(err) != gcerrors.NotFound {
+		t.Errorf("got %v (code %v) want NotFound", err, gcerrors.Code(err))
+	}
+}
+
+// writeMultiStatus answers a PROPFIND with a minimal RFC 4918 multistatus for
+// one non-collection resource, so that a hand-written stub server is WebDAV
+// enough for the driver to stat against.
+func writeMultiStatus(w http.ResponseWriter, href string, size int, contentType string) {
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	w.WriteHeader(http.StatusMultiStatus)
+	fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:"><D:response><D:href>%s</D:href><D:propstat><D:prop>
+<D:resourcetype/>
+<D:getcontentlength>%d</D:getcontentlength>
+<D:getlastmodified>%s</D:getlastmodified>
+<D:getetag>"stub"</D:getetag>
+<D:getcontenttype>%s</D:getcontenttype>
+</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>`,
+		href, size, time.Now().UTC().Format(http.TimeFormat), contentType)
+}
+
 // TestUnreadableSidecar covers a server that answers a missing path with a
 // friendly HTML page and a 200 instead of a 404, which is common. The blob
 // itself is fine, so the read must succeed with metadata taken from the
@@ -1219,6 +1303,10 @@ func TestTLS(t *testing.T) {
 func TestUnreadableSidecar(t *testing.T) {
 	const content = "the actual blob"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == methodPropfind {
+			writeMultiStatus(w, r.URL.Path, len(content), "text/plain")
+			return
+		}
 		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
 		if strings.HasSuffix(r.URL.Path, attrsExt) {
 			w.Header().Set("Content-Type", "text/html")

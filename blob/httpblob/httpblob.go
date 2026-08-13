@@ -805,7 +805,7 @@ func (b *bucket) Attributes(ctx context.Context, key string) (*driver.Attributes
 		return nil, err
 	}
 	waitAttrs := b.fetchAttrs(ctx, objURL)
-	header, size, err := b.headObject(ctx, objURL)
+	header, size, err := b.statObject(ctx, objURL)
 	xa, xaErr := waitAttrs()
 	if err != nil {
 		return nil, withKey(err, key)
@@ -830,18 +830,41 @@ func (b *bucket) Attributes(ctx context.Context, key string) (*driver.Attributes
 	return attrs, nil
 }
 
+// statObject returns the headers and size describing the object at objURL.
+//
+// Under WebDAV it uses PROPFIND, which costs the same as HEAD and additionally
+// reports whether the key names a collection — something no HEAD response can
+// tell you, and which servers otherwise signal in mutually contradictory ways.
+// Plain HTTP has no such method, so it falls back to HEAD.
+func (b *bucket) statObject(ctx context.Context, objURL string) (http.Header, int64, error) {
+	if b.opts.Protocol != ProtocolWebDAV {
+		return b.headObject(ctx, objURL)
+	}
+	e, err := b.stat(ctx, objURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	return e.header(), e.size, nil
+}
+
 // headObject returns the response headers and size for the object at objURL.
 // Servers that disallow HEAD are handled by falling back to a one-byte ranged
 // GET, which reports the full size in Content-Range.
 func (b *bucket) headObject(ctx context.Context, objURL string) (http.Header, int64, error) {
+	var headHeader http.Header
 	resp, err := b.do(ctx, func() (*http.Request, error) {
 		return b.newRequest(ctx, http.MethodHead, objURL, nil)
 	})
 	if err == nil {
 		defer resp.Body.Close()
-		return resp.Header, contentLength(resp), nil
-	}
-	if statusOf(err) != http.StatusMethodNotAllowed {
+		if size := contentLength(resp); size >= 0 {
+			return resp.Header, size, nil
+		}
+		// The server answered but would not say how big the object is. Fall
+		// through to the ranged GET, whose Content-Range carries the total
+		// even when Content-Length is absent.
+		headHeader = resp.Header
+	} else if statusOf(err) != http.StatusMethodNotAllowed {
 		return nil, 0, err
 	}
 
@@ -854,6 +877,11 @@ func (b *bucket) headObject(ctx context.Context, objURL string) (http.Header, in
 		return req, nil
 	})
 	if rangeErr != nil {
+		if headHeader != nil {
+			// HEAD worked; only the size is unknown. Report what we have
+			// rather than failing the whole call.
+			return headHeader, 0, nil
+		}
 		if statusOf(rangeErr) == http.StatusMethodNotAllowed {
 			// Neither HEAD nor GET is allowed, which is how a WebDAV server
 			// reports that the key names a collection rather than a blob.
@@ -865,12 +893,25 @@ func (b *bucket) headObject(ctx context.Context, objURL string) (http.Header, in
 	}
 	defer rangeResp.Body.Close()
 	_, _ = io.Copy(io.Discard, rangeResp.Body)
-	if total, ok := parseContentRangeTotal(rangeResp.Header.Get("Content-Range")); ok {
-		return rangeResp.Header, total, nil
+
+	header := rangeResp.Header
+	if headHeader != nil {
+		// Prefer the HEAD headers: the ranged response describes one byte.
+		header = headHeader
 	}
-	return rangeResp.Header, contentLength(rangeResp), nil
+	if total, ok := parseContentRangeTotal(rangeResp.Header.Get("Content-Range")); ok {
+		return header, total, nil
+	}
+	if size := contentLength(rangeResp); size >= 0 {
+		return header, size, nil
+	}
+	return header, 0, nil
 }
 
+// contentLength returns the body length the response declares, or -1 when it
+// declares none. A server streaming with chunked transfer encoding sends no
+// Content-Length at all — rclone's WebDAV server does exactly this — so
+// "unknown" has to be distinguishable from "empty".
 func contentLength(resp *http.Response) int64 {
 	if resp.ContentLength >= 0 {
 		return resp.ContentLength
@@ -880,7 +921,7 @@ func contentLength(resp *http.Response) int64 {
 			return n
 		}
 	}
-	return 0
+	return -1
 }
 
 // parseContentRangeTotal extracts the total size from a Content-Range header
@@ -1027,6 +1068,17 @@ func (b *bucket) NewRangeReader(ctx context.Context, key string, offset, length 
 		resp.Body.Close()
 		return nil, withKey(err, key)
 	}
+	if size < 0 {
+		// The response did not say how big the object is, which happens
+		// whenever a server streams with chunked transfer encoding. Size is
+		// part of the Reader's contract, so pay for one more round trip to
+		// learn it rather than reporting zero.
+		if _, total, headErr := b.headObject(ctx, objURL); headErr == nil {
+			size = total
+		} else {
+			size = 0
+		}
+	}
 
 	remaining := int64(-1)
 	if length > 0 {
@@ -1097,7 +1149,7 @@ func sliceBody(resp *http.Response, offset, length int64) (io.Reader, int64, err
 	case http.StatusPartialContent:
 		if total, ok := parseContentRangeTotal(resp.Header.Get("Content-Range")); ok {
 			size = total
-		} else {
+		} else if size >= 0 {
 			size = offset + size
 		}
 	case http.StatusOK:

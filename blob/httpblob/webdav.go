@@ -37,8 +37,10 @@ const (
 	methodCopy     = "COPY"
 	methodMove     = "MOVE"
 
-	// depth1 is the only Depth httpblob ever sends. "Depth: infinity" is
-	// optional for servers to support and unbounded in size; see ListPaged.
+	// depth0 and depth1 are the only Depth values httpblob sends.
+	// "Depth: infinity" is optional for servers to support and unbounded in
+	// size; see ListPaged.
+	depth0 = "0"
 	depth1 = "1"
 )
 
@@ -50,6 +52,7 @@ const propfindBody = `<?xml version="1.0" encoding="utf-8"?>
     <D:getcontentlength/>
     <D:getlastmodified/>
     <D:getetag/>
+    <D:getcontenttype/>
   </D:prop>
 </D:propfind>`
 
@@ -74,6 +77,7 @@ type davProp struct {
 	GetContentLength string          `xml:"DAV: getcontentlength"`
 	GetLastModified  string          `xml:"DAV: getlastmodified"`
 	GetETag          string          `xml:"DAV: getetag"`
+	GetContentType   string          `xml:"DAV: getcontenttype"`
 }
 
 type davResourceType struct {
@@ -100,6 +104,7 @@ type davEntry struct {
 	size         int64
 	modTime      string
 	etag         string
+	contentType  string
 }
 
 // header synthesizes the equivalent HTTP headers for this entry, for As.
@@ -110,6 +115,9 @@ func (e davEntry) header() http.Header {
 	}
 	if e.modTime != "" {
 		h.Set("Last-Modified", e.modTime)
+	}
+	if e.contentType != "" {
+		h.Set("Content-Type", e.contentType)
 	}
 	if !e.isCollection {
 		h.Set("Content-Length", strconv.FormatInt(e.size, 10))
@@ -171,10 +179,48 @@ func (b *bucket) propfind(ctx context.Context, rawURL, depth string, before func
 			if v := ps.Prop.GetETag; v != "" {
 				e.etag = strings.TrimSpace(v)
 			}
+			if v := ps.Prop.GetContentType; v != "" {
+				e.contentType = strings.TrimSpace(v)
+			}
 		}
 		entries = append(entries, e)
 	}
 	return entries, nil
+}
+
+// stat returns the WebDAV properties of a single resource.
+//
+// It replaces HEAD under ProtocolWebDAV for the same number of requests, and
+// answers a question HEAD cannot: whether the key names a collection. Servers
+// disagree wildly on what GET/HEAD does to a collection — x/net/webdav answers
+// 405, Apache mod_dav serves an autoindex with 200, or 403 with
+// "Options -Indexes" — and none of those means "this is a blob". resourcetype
+// does.
+func (b *bucket) stat(ctx context.Context, objURL string) (davEntry, error) {
+	entries, err := b.propfind(ctx, objURL, depth0, nil)
+	if err != nil {
+		return davEntry{}, err
+	}
+	for _, e := range entries {
+		if e.isCollection {
+			// In blob terms a collection is simply not there.
+			return davEntry{}, &Error{
+				Method:     methodPropfind,
+				URL:        objURL,
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       "the key names a collection, not a blob",
+			}
+		}
+		return e, nil
+	}
+	return davEntry{}, &Error{
+		Method:     methodPropfind,
+		URL:        objURL,
+		StatusCode: http.StatusNotFound,
+		Status:     "404 Not Found",
+		Body:       "no properties returned",
+	}
 }
 
 // relativePath converts a DAV:href into a bucket-relative path in escaped-key
