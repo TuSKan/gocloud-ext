@@ -63,7 +63,7 @@ func newHarness(ctx context.Context, t *testing.T, prefix string, metadataHow Me
 	clientConn, serverConn := netPipe()
 
 	// Initialize the SFTP server
-	server, err := sftp.NewServer(serverConn, sftp.WithDebug(os.Stderr))
+	server, err := sftp.NewServer(serverConn)
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +322,7 @@ func TestOpenBucketURL(t *testing.T) {
 	}{
 		{"sftp://host?metadata=invalid", `query parameter "metadata"`},
 		{"sftp://host?timeout=invalid", `query parameter "timeout"`},
-		{"sftp://host?private_key_path=/does/not/exist/missing.key", "failed to read private key"},
+		{"sftp://host?insecure_skip_verify=true&private_key_path=/does/not/exist/missing.key", "failed to read private key"},
 		{"sftp://user:pass@host?create_dir=true&metadata=skip&insecure_skip_verify=true", "failed to dial"},
 		{"sftp://host?known_hosts_path=/does/not/exist/hosts.txt", "failed to parse known_hosts file"},
 
@@ -343,9 +343,11 @@ func TestOpenBucketURL(t *testing.T) {
 		// No credentials at all is an error rather than a confusing
 		// authentication failure from the server.
 		{"sftp://host?insecure_skip_verify=true", "no authentication available"},
+		// Order matters: host key setup happens before credentials, so cases
+		// asserting on credentials skip verification to reach that code.
 
 		// private_key_env names an environment variable that must be set.
-		{"sftp://host?private_key_env=SFTPBLOB_NO_SUCH_VAR", "is empty"},
+		{"sftp://host?insecure_skip_verify=true&private_key_env=SFTPBLOB_NO_SUCH_VAR", "is empty"},
 	}
 
 	for _, tc := range tests {
@@ -364,7 +366,7 @@ func TestOpenBucketURL(t *testing.T) {
 	// Test boundary deadline inference
 	ctxWithDeadline, cancel := context.WithTimeout(ctx, 0)
 	defer cancel()
-	uTimeout, _ := url.Parse("sftp://host")
+	uTimeout, _ := url.Parse("sftp://host?insecure_skip_verify=true")
 	_, err := opener.OpenBucketURL(ctxWithDeadline, uTimeout)
 	if err != context.DeadlineExceeded && !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected context.DeadlineExceeded for zero deadline, got %v", err)

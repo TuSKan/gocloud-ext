@@ -125,10 +125,13 @@ jobs:
           mkdir -p /tmp/sftp-keys /tmp/sftp-data
           ssh-keygen -t ed25519 -N "" -f /tmp/sftp-keys/id_ed25519 -q
           chmod 700 /tmp/sftp-keys && chmod 600 /tmp/sftp-keys/id_ed25519
+          # The container runs as its own uid; make the bucket root writable
+          # by it rather than guessing at a uid mapping.
+          chmod 777 /tmp/sftp-data
           docker run -d --name sftp -p 2222:2222 \
-            -v /tmp/sftp-keys/id_ed25519.pub:/home/tester/.ssh/keys/id_ed25519.pub:ro \
-            -v /tmp/sftp-data:/home/tester/data \
-            -e PUBLIC_KEY_FILE=/home/tester/.ssh/keys/id_ed25519.pub \
+            -v /tmp/sftp-keys/id_ed25519.pub:/keys/id_ed25519.pub:ro \
+            -v /tmp/sftp-data:/data \
+            -e PUBLIC_KEY_FILE=/keys/id_ed25519.pub \
             -e USER_NAME=tester \
             -e SUDO_ACCESS=false \
             -e PASSWORD_ACCESS=false \
