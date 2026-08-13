@@ -1,0 +1,32 @@
+# Apache httpd with mod_dav, for the WebDAV interop job in ci.yml.
+#
+# Apache is the interesting target: it refuses "Depth: infinity" PROPFIND by
+# default, which is the behavior TestConformanceWebDAVApacheStyle only
+# simulates in-process.
+FROM httpd:2.4
+
+RUN set -eux; \
+    sed -i \
+      -e 's|^#LoadModule dav_module|LoadModule dav_module|' \
+      -e 's|^#LoadModule dav_fs_module|LoadModule dav_fs_module|' \
+      -e 's|^#LoadModule auth_basic_module|LoadModule auth_basic_module|' \
+      -e 's|^#LoadModule authn_file_module|LoadModule authn_file_module|' \
+      -e 's|^#LoadModule authn_core_module|LoadModule authn_core_module|' \
+      -e 's|^#LoadModule authz_user_module|LoadModule authz_user_module|' \
+      /usr/local/apache2/conf/httpd.conf; \
+    mkdir -p /usr/local/apache2/var; \
+    htpasswd -bc /usr/local/apache2/conf/dav.passwd test test; \
+    { \
+      echo ''; \
+      echo 'DavLockDB /usr/local/apache2/var/DavLock'; \
+      echo '<Directory "/usr/local/apache2/htdocs">'; \
+      echo '  Dav On'; \
+      echo '  Options Indexes'; \
+      echo '  AllowOverride None'; \
+      echo '  AuthType Basic'; \
+      echo '  AuthName "webdav"'; \
+      echo '  AuthUserFile /usr/local/apache2/conf/dav.passwd'; \
+      echo '  Require valid-user'; \
+      echo '</Directory>'; \
+    } >> /usr/local/apache2/conf/httpd.conf; \
+    chown -R www-data /usr/local/apache2/var /usr/local/apache2/htdocs

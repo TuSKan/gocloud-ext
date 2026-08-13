@@ -1,0 +1,25 @@
+gocloud-ext
+Copyright 2026 The gocloud-ext Authors
+
+This product includes software developed at
+The Go Cloud Development Kit (https://github.com/google/go-cloud).
+
+Portions of this software are derived from the Go Cloud Development Kit,
+Copyright 2018-2026 The Go Cloud Development Kit Authors, licensed under the
+Apache License, Version 2.0.
+
+In particular:
+
+  internal/escape/escape.go
+      A verbatim copy of gocloud.dev/internal/escape as of go-cloud commit
+      b5401c07b5f16ea9b5902e159ecc6e8a7c3dc498. Vendored because Go's internal
+      package rule makes gocloud.dev/internal unreachable from this module.
+
+  internal/useragent/useragent.go
+      Derived from gocloud.dev/internal/useragent, with a fix for a nil
+      Transport and a different product token.
+
+  blob/httpblob/
+      Structured after the drivers in gocloud.dev/blob, and follows the
+      key-escaping and ".attrs" sidecar conventions established by
+      gocloud.dev/blob/fileblob.

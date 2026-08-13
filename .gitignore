@@ -1,0 +1,9 @@
+# Build and test artifacts.
+*.exe
+*.test
+*.out
+
+# Local tooling.
+.serena/
+.idea/
+.vscode/

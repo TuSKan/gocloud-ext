@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Daily, so upstream go-cloud changes surface here rather than in a user's
+    # broken `go get`.
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+
+      # -race is the reason this job exists. The driver spawns goroutines for
+      # writes and for the concurrent sidecar fetch, and shares a
+      # created-collection cache across them; TestConcurrentOperations is
+      # written specifically to be run under the race detector.
+      - name: Test all modules
+        run: |
+          set -euo pipefail
+          sed -e '/^#/d' -e '/^$/d' allmodules | awk '{print $1}' | while read -r dir; do
+            echo "::group::go test $dir"
+            (cd "$dir" && go test ./... -race -count=1)
+            echo "::endgroup::"
+          done
+
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          diff="$(gofmt -s -d .)"
+          if [ -n "$diff" ]; then
+            echo "$diff"
+            echo "FAIL: run 'gofmt -s -w .'"
+            exit 1
+          fi
+
+      - name: go vet
+        run: |
+          set -euo pipefail
+          sed -e '/^#/d' -e '/^$/d' allmodules | awk '{print $1}' | while read -r dir; do
+            (cd "$dir" && go vet ./...)
+          done
+
+  interop:
+    name: WebDAV interop (${{ matrix.server }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [rclone, apache]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+
+      # golang.org/x/net/webdav is one implementation. Real servers differ in
+      # Depth handling, MOVE semantics and what they do with a missing parent
+      # collection, and those differences are exactly where a WebDAV client
+      # breaks. Apache in particular refuses "Depth: infinity" by default.
+      - name: Start rclone
+        if: matrix.server == 'rclone'
+        run: |
+          mkdir -p /tmp/dav-data && chmod 777 /tmp/dav-data
+          docker run -d --name dav -p 8080:8080 -v /tmp/dav-data:/data \
+            rclone/rclone serve webdav /data --addr :8080 --user test --pass test
+
+      - name: Start Apache mod_dav
+        if: matrix.server == 'apache'
+        run: |
+          docker build -t dav-apache -f .github/webdav/Dockerfile.apache .github/webdav
+          docker run -d --name dav -p 8080:80 dav-apache
+
+      - name: Wait for the server
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf -u test:test -o /dev/null "http://127.0.0.1:8080/"; then
+              echo "server is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not come up"; docker logs dav; exit 1
+
+      - name: Conformance against a real server
+        env:
+          HTTPBLOB_TEST_WEBDAV_URL: http://127.0.0.1:8080
+          HTTPBLOB_TEST_WEBDAV_USER: test
+          HTTPBLOB_TEST_WEBDAV_PASSWORD: test
+        run: cd blob/httpblob && go test ./... -count=1 -run TestConformanceWebDAVExternal -v
+
+      - name: Server logs on failure
+        if: failure()
+        run: docker logs dav
+
+  upstream:
+    name: Build against gocloud.dev@master
+    runs-on: ubuntu-latest
+    # gocloud.dev/blob/driver carries no compatibility guarantee and go-cloud
+    # is still v0.x. This job is expected to go red when upstream changes the
+    # driver interface; that is the signal to cut a new release here.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+      - name: Upgrade and test
+        run: |
+          set -euo pipefail
+          cd blob/httpblob
+          go get gocloud.dev@master
+          go build ./...
+          go test ./... -count=1
