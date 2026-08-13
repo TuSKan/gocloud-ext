@@ -199,6 +199,18 @@ func (b *bucket) propfind(ctx context.Context, rawURL, depth string, before func
 func (b *bucket) stat(ctx context.Context, objURL string) (davEntry, error) {
 	entries, err := b.propfind(ctx, objURL, depth0, nil)
 	if err != nil {
+		if isRedirect(err) {
+			// Apache answers a collection URL without its trailing slash with
+			// a 301 to the canonical form. Only a collection gets that
+			// treatment, and a collection is not a blob.
+			return davEntry{}, &Error{
+				Method:     methodPropfind,
+				URL:        objURL,
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       "the key names a collection, not a blob",
+			}
+		}
 		return davEntry{}, err
 	}
 	for _, e := range entries {
@@ -318,7 +330,7 @@ func (l *lister) takeBefore() func(asFunc func(any) bool) error {
 // visit lists one collection and recurses into the ones that can still
 // contribute to the page.
 func (l *lister) visit(ctx context.Context, dir string) error {
-	entries, err := l.b.propfind(ctx, l.b.pathURL(dir), depth1, l.takeBefore())
+	entries, err := l.b.propfind(ctx, l.b.collectionURL(dir), depth1, l.takeBefore())
 	if err != nil {
 		if l.b.ErrorCode(err) == gcerrors.NotFound {
 			// The collection doesn't exist, or vanished mid-walk. Either way
@@ -388,7 +400,7 @@ func (l *lister) visit(ctx context.Context, dir string) error {
 // a directory as far as the blob API is concerned. The search stops at the
 // first key found, so a populated directory costs a single request.
 func (l *lister) hasKey(ctx context.Context, dir string) (bool, error) {
-	entries, err := l.b.propfind(ctx, l.b.pathURL(dir), depth1, nil)
+	entries, err := l.b.propfind(ctx, l.b.collectionURL(dir), depth1, nil)
 	if err != nil {
 		if l.b.ErrorCode(err) == gcerrors.NotFound {
 			return false, nil

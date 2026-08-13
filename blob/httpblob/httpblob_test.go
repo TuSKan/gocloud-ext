@@ -1279,6 +1279,53 @@ func TestCollectionIsNotABlob(t *testing.T) {
 	}
 }
 
+// TestCollectionRedirect covers Apache's DirectorySlash behavior: a request on
+// a collection URL without its trailing slash is answered with a 301 to the
+// canonical form. Go's client follows that by reissuing the request as a GET,
+// so a PROPFIND would silently become a directory read — and a DELETE would
+// silently become a read too, reporting success while deleting nothing.
+func TestCollectionRedirect(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		// Only the WebDAV methods are redirected, so any request that arrives
+		// at the trailing-slash form proves the client followed one — and,
+		// since Go rewrites the method on the way, arrived as a GET.
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+		default:
+			if !strings.HasSuffix(r.URL.Path, "/") {
+				http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, "<html><body>Index of /someDir</body></html>")
+	}))
+	defer srv.Close()
+	b := openWebDAV(t, srv, nil)
+	ctx := context.Background()
+
+	if _, err := b.Attributes(ctx, "someDir"); gcerrors.Code(err) != gcerrors.NotFound {
+		t.Errorf("Attributes: got %v (code %v) want NotFound", err, gcerrors.Code(err))
+	}
+	if err := b.Delete(ctx, "someDir"); err == nil {
+		t.Error("Delete: got nil error for a redirected DELETE, want a failure")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, s := range seen {
+		if strings.HasSuffix(s, "/") {
+			t.Errorf("followed a redirect for a WebDAV method; requests seen: %v", seen)
+			break
+		}
+	}
+}
+
 // writeMultiStatus answers a PROPFIND with a minimal RFC 4918 multistatus for
 // one non-collection resource, so that a hand-written stub server is WebDAV
 // enough for the driver to stat against.

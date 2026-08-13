@@ -373,6 +373,14 @@ func openBucket(_ context.Context, client *http.Client, baseURL string, opts *Op
 	if maxRetries <= 0 {
 		maxRetries = defaultMaxRetries
 	}
+
+	// Go follows a 301/302/303 by reissuing the request as a GET. That is
+	// correct for browsers and catastrophic for us: Apache redirects a
+	// collection URL to its trailing-slash form, so a PROPFIND silently
+	// becomes a directory read, and a redirected DELETE would silently become
+	// a GET — reporting success while deleting nothing. Only GET and HEAD may
+	// follow redirects.
+	client = withSafeRedirects(client)
 	return &bucket{
 		client:     useragent.HTTPClient(client, "httpblob"),
 		baseURL:    u,
@@ -479,6 +487,35 @@ func newError(req *http.Request, resp *http.Response) *Error {
 		Status:     resp.Status,
 		Body:       string(body),
 	}
+}
+
+// maxRedirects matches net/http's own default limit.
+const maxRedirects = 10
+
+// withSafeRedirects returns a copy of client that only follows redirects for
+// GET and HEAD. For every other method Go would reissue the request as a GET,
+// changing what the request means; the caller sees the redirect response
+// instead and decides.
+func withSafeRedirects(client *http.Client) *http.Client {
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		switch via[0].Method {
+		case http.MethodGet, http.MethodHead:
+		default:
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxRedirects)
+		}
+		return nil
+	}
+	return &c
+}
+
+// isRedirect reports whether err carries a 3xx status.
+func isRedirect(err error) bool {
+	status := statusOf(err)
+	return status >= 300 && status < 400
 }
 
 // statusOf returns the HTTP status carried by err, or 0 if it isn't an *Error.
@@ -645,6 +682,20 @@ func (b *bucket) pathURL(escapedPath string) string {
 	return u.String()
 }
 
+// collectionURL is pathURL for something known to be a collection. A
+// collection's canonical URL ends in "/", and Apache answers the slashless
+// form with a redirect, so asking for it directly saves a round trip and
+// avoids depending on how redirects are handled.
+func (b *bucket) collectionURL(escapedPath string) string {
+	if escapedPath == "" {
+		u := *b.baseURL
+		u.Path = b.baseURL.Path + "/"
+		u.RawPath = ""
+		return u.String()
+	}
+	return b.pathURL(escapedPath) + "/"
+}
+
 // newRequest builds a request with authentication and custom headers applied.
 func (b *bucket) newRequest(ctx context.Context, method, rawURL string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
@@ -739,6 +790,11 @@ func (b *bucket) do(ctx context.Context, prepare func() (*http.Request, error)) 
 			lastErr = err
 		case resp.StatusCode >= 400:
 			pause = retryAfter(resp.Header)
+			lastErr = newError(req, resp)
+		case resp.StatusCode >= 300:
+			// Only reachable for methods withSafeRedirects declines to follow.
+			// The caller has to interpret it: for a WebDAV collection this is
+			// how Apache asks for the trailing-slash form of the URL.
 			lastErr = newError(req, resp)
 		default:
 			return resp, nil
