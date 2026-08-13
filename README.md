@@ -25,6 +25,9 @@ in CI (rclone and Apache `mod_dav` for WebDAV, OpenSSH for SFTP).
 Each module is versioned and installed independently. Take only the one you
 need; installing `sftpblob` does not pull in `httpblob`, or vice versa.
 
+Summaries follow below. Each module also has its own full documentation:
+**[httpblob](blob/httpblob/README.md)** · **[sftpblob](blob/sftpblob/README.md)**.
+
 ---
 
 # `blob/httpblob`
@@ -138,6 +141,10 @@ response headers only and `Attributes.Metadata` is always empty.
   request.
 - `.attrs` as a suffix and `.gocdktmp.` anywhere are reserved key names.
 
+📖 **[Full httpblob documentation →](blob/httpblob/README.md)** — retry policy,
+scheme-registration collisions, key escaping, `As` types, and opening a bucket
+in code with a custom `*http.Client`.
+
 ---
 
 # `blob/sftpblob`
@@ -244,6 +251,10 @@ values.
   killed processes are hidden from `List` and accumulate.
 - Keys are escaped for filesystem safety: ASCII 0–31 and `\<>:"|?*` become
   `__0x<hex>__`, as do the separators in `../` and `//` and a trailing `/`.
+
+📖 **[Full sftpblob documentation →](blob/sftpblob/README.md)** — host key
+verification, key escaping, `As` types, and bringing your own `*sftp.Client`
+for jump hosts or connection pooling.
 
 ---
 
