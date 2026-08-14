@@ -92,6 +92,29 @@ func setup(ctx context.Context, t *testing.T, newHarness HarnessMaker) Harness {
 	return h
 }
 
+// partBodies returns n distinct part bodies sized for the backend.
+//
+// Every part but the last is padded to Constraints.MinPartSize, because S3
+// rejects an undersized non-final part and would fail every multi-part case
+// here. Backends with no minimum keep short bodies so their runs stay fast.
+// The last part is exempt from the minimum by definition.
+//
+// Each body is a distinct repeated character, so a backend that assembles in
+// the wrong order produces visibly wrong output rather than something that
+// happens to compare equal.
+func partBodies(c multipart.Constraints, n int) []string {
+	const shortLen = 16
+	bodies := make([]string, n)
+	for i := range bodies {
+		length := shortLen
+		if i < n-1 && c.MinPartSize > int64(shortLen) {
+			length = int(c.MinPartSize)
+		}
+		bodies[i] = strings.Repeat(string(rune('a'+i%26)), length)
+	}
+	return bodies
+}
+
 // uploadParts sends each body as its own part, in the order given by order,
 // and returns the resulting parts.
 //
@@ -140,12 +163,12 @@ func testOutOfOrder(t *testing.T, newHarness HarnessMaker) {
 	h := setup(ctx, t, newHarness)
 
 	const key = "out-of-order.txt"
-	bodies := []string{"first ", "second ", "third"}
 
 	u, err := h.NewUploader(ctx, t, key, nil)
 	if err != nil {
 		t.Fatalf("NewUploader: %v", err)
 	}
+	bodies := partBodies(u.Constraints(), 3)
 	// Deliberately not ascending: a backend that assembles in arrival order,
 	// or that needs the caller to supply offsets, produces the wrong bytes.
 	parts := uploadParts(ctx, t, u, bodies, []int{2, 0, 1})
@@ -179,12 +202,12 @@ func testPartsSurviveJSON(t *testing.T, newHarness HarnessMaker) {
 	h := setup(ctx, t, newHarness)
 
 	const key = "json-parts.txt"
-	bodies := []string{"alpha ", "beta"}
 
 	u, err := h.NewUploader(ctx, t, key, nil)
 	if err != nil {
 		t.Fatalf("NewUploader: %v", err)
 	}
+	bodies := partBodies(u.Constraints(), 2)
 	parts := uploadParts(ctx, t, u, bodies, []int{0, 1})
 
 	// The point of this package is that the process uploading a part need not
@@ -269,12 +292,12 @@ func testResume(t *testing.T, newHarness HarnessMaker) {
 	h := setup(ctx, t, newHarness)
 
 	const key = "resumed.txt"
-	bodies := []string{"before ", "after"}
 
 	u, err := h.NewUploader(ctx, t, key, nil)
 	if err != nil {
 		t.Fatalf("NewUploader: %v", err)
 	}
+	bodies := partBodies(u.Constraints(), 2)
 	if !u.Constraints().Resumable {
 		t.Skip("backend reports Resumable false")
 	}
@@ -305,12 +328,12 @@ func testListParts(t *testing.T, newHarness HarnessMaker) {
 	h := setup(ctx, t, newHarness)
 
 	const key = "listed.txt"
-	bodies := []string{"one ", "two ", "three"}
 
 	u, err := h.NewUploader(ctx, t, key, nil)
 	if err != nil {
 		t.Fatalf("NewUploader: %v", err)
 	}
+	bodies := partBodies(u.Constraints(), 3)
 	uploadParts(ctx, t, u, bodies, []int{1, 2, 0})
 
 	listed, err := u.ListParts(ctx)

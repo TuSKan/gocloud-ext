@@ -11,3 +11,4 @@
 blob/httpblob                yes
 blob/sftpblob                yes
 blob/multipart               yes
+blob/multipart/s3mp          yes

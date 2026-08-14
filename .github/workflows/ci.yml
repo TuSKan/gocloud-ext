@@ -90,7 +90,7 @@ jobs:
       matrix:
         # Nested modules are linted separately; golangci-lint works on one
         # module at a time. Keep in sync with allmodules.
-        module: [".", "blob/httpblob", "blob/sftpblob", "blob/multipart"]
+        module: [".", "blob/httpblob", "blob/sftpblob", "blob/multipart", "blob/multipart/s3mp"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -229,6 +229,53 @@ jobs:
       - name: Server logs on failure
         if: failure()
         run: docker logs sftp
+
+  s3-multipart:
+    name: S3 multipart (MinIO)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+
+      # s3mp drives S3's own multipart API, which no fake can stand in for:
+      # the 5 MiB minimum on non-final parts, ETag handling and
+      # CompleteMultipartUpload's part ordering are all server behaviour.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio server /data
+
+      - name: Wait for MinIO and create the bucket
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null "http://127.0.0.1:9000/minio/health/live"; then
+              echo "minio is up"
+              docker run --rm --network host --entrypoint sh minio/mc -c \
+                "mc alias set local http://127.0.0.1:9000 minioadmin minioadmin && \
+                 mc mb --ignore-existing local/mptest"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "minio did not come up"; docker logs minio; exit 1
+
+      - name: Multipart conformance against MinIO
+        env:
+          S3MP_TEST_ENDPOINT: http://127.0.0.1:9000
+          S3MP_TEST_BUCKET: mptest
+          S3MP_TEST_ACCESS_KEY_ID: minioadmin
+          S3MP_TEST_SECRET_ACCESS_KEY: minioadmin
+        run: cd blob/multipart/s3mp && go test ./... -count=1 -run TestConformanceS3 -v
+
+      - name: Server logs on failure
+        if: failure()
+        run: docker logs minio
 
   upstream:
     name: Build against gocloud.dev@master
