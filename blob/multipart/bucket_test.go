@@ -27,95 +27,29 @@ import (
 	"gocloud.dev/blob/memblob"
 )
 
-// bucketOpener returns a *blob.Bucket. Whether a second call shares storage
-// with the first depends on the driver: two fileblob buckets over one directory
-// do, two memblob buckets do not, since each OpenBucket allocates its own map.
-//
-// separateHandles records that difference. Where it is false, the harness hands
-// out one bucket for everything, which is the only way memblob can be tested at
-// all; where it is true, resuming genuinely goes through an independent handle
-// and exercises the cross-process path this package exists for.
-type bucketOpener struct {
-	open            func() (*blob.Bucket, error)
-	separateHandles bool
-}
-
-type harness struct {
-	opener  bucketOpener
-	primary *blob.Bucket
-	extra   []*blob.Bucket
-}
-
-func newHarness(opener bucketOpener) mptest.HarnessMaker {
-	return func(ctx context.Context, t *testing.T) (mptest.Harness, error) {
-		b, err := opener.open()
-		if err != nil {
-			return nil, err
-		}
-		return &harness{opener: opener, primary: b}, nil
+func memOpener() mptest.BucketOpener {
+	return mptest.BucketOpener{
+		Open:            func() (*blob.Bucket, error) { return memblob.OpenBucket(nil), nil },
+		SeparateHandles: false,
 	}
 }
 
-// handle returns a bucket for reads or for a resumed upload: an independent one
-// where the driver supports it, otherwise the primary.
-func (h *harness) handle() (*blob.Bucket, error) {
-	if !h.opener.separateHandles {
-		return h.primary, nil
-	}
-	b, err := h.opener.open()
-	if err != nil {
-		return nil, err
-	}
-	h.extra = append(h.extra, b)
-	return b, nil
-}
-
-func (h *harness) NewUploader(ctx context.Context, t *testing.T, key string, opts *multipart.Options) (multipart.Uploader, error) {
-	return multipart.NewUploader(ctx, h.primary, key, opts)
-}
-
-func (h *harness) Open(ctx context.Context, t *testing.T, key, uploadID string) (multipart.Uploader, error) {
-	b, err := h.handle()
-	if err != nil {
-		return nil, err
-	}
-	return multipart.Open(ctx, b, key, uploadID, nil)
-}
-
-func (h *harness) Bucket(ctx context.Context, t *testing.T) (*blob.Bucket, error) {
-	return h.handle()
-}
-
-func (h *harness) Close() {
-	for _, b := range h.extra {
-		_ = b.Close()
-	}
-	_ = h.primary.Close()
-}
-
-func memOpener() bucketOpener {
-	return bucketOpener{
-		open:            func() (*blob.Bucket, error) { return memblob.OpenBucket(nil), nil },
-		separateHandles: false,
-	}
-}
-
-func fileOpener(dir string) bucketOpener {
-	return bucketOpener{
-		open:            func() (*blob.Bucket, error) { return fileblob.OpenBucket(dir, nil) },
-		separateHandles: true,
+func fileOpener(dir string) mptest.BucketOpener {
+	return mptest.BucketOpener{
+		Open:            func() (*blob.Bucket, error) { return fileblob.OpenBucket(dir, nil) },
+		SeparateHandles: true,
 	}
 }
 
 func TestConformanceMem(t *testing.T) {
-	mptest.RunConformanceTests(t, newHarness(memOpener()))
+	mptest.RunConformanceTests(t, mptest.BucketHarness(memOpener()))
 }
 
-// TestConformanceFile is the one that matters for the cross-process claim: each
+// TestConformanceFile is the run that backs the cross-process claim: each
 // bucket handle is independent, so Resume really does commit an upload through
 // a handle that did not create it.
 func TestConformanceFile(t *testing.T) {
-	mptest.RunConformanceTests(t, newHarness(fileOpener(t.TempDir())))
+	mptest.RunConformanceTests(t, mptest.BucketHarness(fileOpener(t.TempDir())))
 }
 
 // TestConformancePrefixed runs the suite through a prefixed bucket. The generic
@@ -123,17 +57,17 @@ func TestConformanceFile(t *testing.T) {
 // any cooperation from this package; this proves that rather than assuming it.
 func TestConformancePrefixed(t *testing.T) {
 	dir := t.TempDir()
-	opener := bucketOpener{
-		open: func() (*blob.Bucket, error) {
+	opener := mptest.BucketOpener{
+		Open: func() (*blob.Bucket, error) {
 			b, err := fileblob.OpenBucket(dir, nil)
 			if err != nil {
 				return nil, err
 			}
 			return blob.PrefixedBucket(b, "some/prefix/"), nil
 		},
-		separateHandles: true,
+		SeparateHandles: true,
 	}
-	mptest.RunConformanceTests(t, newHarness(opener))
+	mptest.RunConformanceTests(t, mptest.BucketHarness(opener))
 }
 
 // TestStagedPartsRemovedAfterCommit checks that a committed upload leaves no

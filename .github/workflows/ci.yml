@@ -150,6 +150,17 @@ jobs:
           HTTPBLOB_TEST_WEBDAV_PASSWORD: test
         run: cd blob/httpblob && go test ./... -count=1 -run TestConformanceWebDAVExternal -v
 
+      # The generic multipart uploader works through blob.Bucket, so WebDAV
+      # needs no multipart code of its own. This is where that claim is
+      # actually tested: staging parts creates collections the server has to
+      # materialise, and Commit reads every part back over HTTP.
+      - name: Multipart conformance against a real server
+        env:
+          HTTPBLOB_TEST_WEBDAV_URL: http://127.0.0.1:8080
+          HTTPBLOB_TEST_WEBDAV_USER: test
+          HTTPBLOB_TEST_WEBDAV_PASSWORD: test
+        run: cd blob/multipart && go test ./... -count=1 -run TestConformanceWebDAV -v
+
       - name: Server logs on failure
         if: failure()
         run: docker logs dav
@@ -204,6 +215,16 @@ jobs:
           SFTPBLOB_TEST_KEY_PATH: /tmp/sftp-keys/id_ed25519
           SFTPBLOB_TEST_KNOWN_HOSTS: /tmp/sftp-keys/known_hosts
         run: cd blob/sftpblob && go test ./... -count=1 -run TestConformanceExternal -v
+
+      # sftpblob has no multipart code of its own; the generic uploader drives
+      # it through blob.Bucket. Each bucket handle dials its own SSH
+      # connection, so the resume case genuinely crosses a connection boundary.
+      - name: Multipart conformance against OpenSSH
+        env:
+          SFTPBLOB_TEST_URL: sftp://tester@127.0.0.1:2222/data
+          SFTPBLOB_TEST_KEY_PATH: /tmp/sftp-keys/id_ed25519
+          SFTPBLOB_TEST_KNOWN_HOSTS: /tmp/sftp-keys/known_hosts
+        run: cd blob/multipart && go test ./... -count=1 -run TestConformanceSFTP -v
 
       - name: Server logs on failure
         if: failure()
