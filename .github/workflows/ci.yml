@@ -291,29 +291,32 @@ jobs:
       # azmp stages blocks and commits a block list, which is server behaviour
       # no fake reproduces: block IDs must all decode to the same length, and
       # uncommitted blocks have to survive between calls.
+      # --skipApiVersionCheck is required, not optional tuning. Both the Azure
+      # CLI and the Go SDK negotiate an x-ms-version newer than the Azurite
+      # image knows, and Azurite rejects it outright with
+      # "The API version ... is not supported by Azurite" / InvalidHeaderValue.
+      # The alternative is pinning both sides to an old API version, which
+      # would stop testing what the driver actually sends.
       - name: Start Azurite
         run: |
           docker run -d --name azurite -p 10000:10000 \
             mcr.microsoft.com/azure-storage/azurite \
-            azurite-blob --blobHost 0.0.0.0
+            azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
 
-      - name: Wait for Azurite and create the container
+      # Only waits for the port. The container is created by the test itself,
+      # which already holds the connection string; shelling out to the Azure
+      # CLI just to issue one PUT added a second client whose API version had
+      # to agree with Azurite's, and that is what broke here first.
+      - name: Wait for Azurite
         run: |
           set -euo pipefail
           for i in $(seq 1 60); do
-            if curl -sf -o /dev/null "http://127.0.0.1:10000/devstoreaccount1?comp=list" \
-               || curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:10000/" | grep -qE '400|403'; then
-              echo "azurite is up"
-              az storage container create --name mptest \
-                --connection-string "$AZURITE_CONN" >/dev/null
-              exit 0
+            if curl -s -o /dev/null "http://127.0.0.1:10000/"; then
+              echo "azurite is up"; exit 0
             fi
             sleep 1
           done
           echo "azurite did not come up"; docker logs azurite; exit 1
-        env:
-          # The well-known Azurite development account. Not a secret.
-          AZURITE_CONN: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq5ZWpVLwDEXTQrLBg==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
 
       - name: Multipart conformance against Azurite
         env:
@@ -391,7 +394,10 @@ jobs:
         run: |
           set -euo pipefail
           sed -e '/^#/d' -e '/^$/d' allmodules | awk '{print $1}' | while read -r dir; do
-            [ "$dir" = "." ] && continue
+            # Written as a full if rather than "[ ... ] && continue": under
+            # set -e the && form leaves the list exit status at 1 for every
+            # non-root module, which is a trap waiting to fire.
+            if [ "$dir" = "." ]; then continue; fi
             echo "::group::gocloud.dev@master in $dir"
             (cd "$dir" && go get gocloud.dev@master && go build ./... && go test ./... -count=1)
             echo "::endgroup::"

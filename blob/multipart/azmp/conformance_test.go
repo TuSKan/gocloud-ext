@@ -22,7 +22,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/TuSKan/gocloud-ext/blob/multipart"
 	"github.com/TuSKan/gocloud-ext/blob/multipart/azmp"
 	"github.com/TuSKan/gocloud-ext/blob/multipart/mptest"
@@ -45,9 +47,22 @@ const (
 // found rather than as a silent success.
 func TestConformanceAzure(t *testing.T) {
 	conn := os.Getenv(envConnString)
-	container := os.Getenv(envContainer)
-	if conn == "" || container == "" {
+	containerName := os.Getenv(envContainer)
+	if conn == "" || containerName == "" {
 		t.Skipf("set %s and %s to run conformance against an Azure Blob endpoint", envConnString, envContainer)
+	}
+
+	// Create the container here rather than in the CI script. Doing it from
+	// the shell meant a second client — the Azure CLI — whose negotiated
+	// x-ms-version had to agree with the emulator's, and that mismatch is what
+	// broke first. This client is one the test already needs.
+	ctx := context.Background()
+	cc, err := container.NewClientFromConnectionString(conn, containerName, nil)
+	if err != nil {
+		t.Fatalf("building the container client: %v", err)
+	}
+	if _, err := cc.Create(ctx, nil); err != nil && !bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
+		t.Fatalf("creating container %q: %v", containerName, err)
 	}
 
 	// A prefix per run, which also exercises the Prefix path — the one that
@@ -57,9 +72,9 @@ func TestConformanceAzure(t *testing.T) {
 		t.Fatal(err)
 	}
 	prefix := fmt.Sprintf("mp-%s/", hex.EncodeToString(buf[:]))
-	loc := multipart.Location{Bucket: container, Prefix: prefix}
+	loc := multipart.Location{Bucket: containerName, Prefix: prefix}
 
-	bucketURL := fmt.Sprintf("azblob://%s?prefix=%s", container, prefix)
+	bucketURL := fmt.Sprintf("azblob://%s?prefix=%s", containerName, prefix)
 
 	mptest.RunConformanceTests(t, func(ctx context.Context, t *testing.T) (mptest.Harness, error) {
 		return &azHarness{conn: conn, loc: loc, url: bucketURL}, nil

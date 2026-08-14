@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"testing"
@@ -64,6 +65,8 @@ func TestConformanceWebDAV(t *testing.T) {
 		parsed.User = url.UserPassword(user, os.Getenv("HTTPBLOB_TEST_WEBDAV_PASSWORD"))
 	}
 
+	ctx := context.Background()
+
 	// A collection per run, so leftovers from an earlier run cannot be
 	// mistaken for this one's.
 	suffix, err := randomSuffix()
@@ -73,7 +76,17 @@ func TestConformanceWebDAV(t *testing.T) {
 	parsed.Path = fmt.Sprintf("%s/mp-%s", parsed.Path, suffix)
 	bucketURL := parsed.String()
 
-	ctx := context.Background()
+	// The bucket root has to exist before anything is written into it.
+	// httpblob creates collections for a key's own path components, but it
+	// treats the bucket's base URL as given — reasonably, since creating it
+	// would mean writing outside the bucket. WebDAV MKCOL also refuses when
+	// the parent is missing, so without this every write fails with a 409 that
+	// looks like a driver bug rather than a missing directory.
+	if err := mkcol(ctx, base, parsed.Path, os.Getenv("HTTPBLOB_TEST_WEBDAV_USER"),
+		os.Getenv("HTTPBLOB_TEST_WEBDAV_PASSWORD")); err != nil {
+		t.Fatalf("creating the bucket collection: %v", err)
+	}
+
 	mptest.RunConformanceTests(t, mptest.BucketHarness(mptest.BucketOpener{
 		Open: func() (*blob.Bucket, error) { return blob.OpenBucket(ctx, bucketURL) },
 		// Each OpenBucket is an independent client against the same server, so
@@ -88,4 +101,37 @@ func randomSuffix() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf[:]), nil
+}
+
+// mkcol creates one collection on a WebDAV server. The bucket's base
+// collection has to exist before httpblob writes into it, and creating it is
+// the caller's job rather than the driver's.
+func mkcol(ctx context.Context, base, path, user, pass string) error {
+	target, err := url.Parse(base)
+	if err != nil {
+		return err
+	}
+	target.Path = path
+	req, err := http.NewRequestWithContext(ctx, "MKCOL", target.String(), nil)
+	if err != nil {
+		return err
+	}
+	if user != "" {
+		req.SetBasicAuth(user, pass)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch resp.StatusCode {
+	case http.StatusCreated, http.StatusOK:
+		return nil
+	case http.StatusMethodNotAllowed:
+		// Already there, which is what was wanted.
+		return nil
+	default:
+		return fmt.Errorf("MKCOL %s: %s", target, resp.Status)
+	}
 }
