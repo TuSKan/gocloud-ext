@@ -10,3 +10,4 @@
 .                            yes
 blob/httpblob                yes
 blob/sftpblob                yes
+blob/multipart               yes

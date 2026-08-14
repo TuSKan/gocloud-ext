@@ -90,7 +90,7 @@ jobs:
       matrix:
         # Nested modules are linted separately; golangci-lint works on one
         # module at a time. Keep in sync with allmodules.
-        module: [".", "blob/httpblob", "blob/sftpblob"]
+        module: [".", "blob/httpblob", "blob/sftpblob", "blob/multipart"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
