@@ -22,6 +22,13 @@ in CI (rclone and Apache `mod_dav` for WebDAV, OpenSSH for SFTP).
 | [`blob/httpblob`](#blobhttpblob) | `webdav`, `webdavs` | ✅ | ✅ | Nextcloud, Apache `mod_dav`, nginx `dav`, any RFC 4918 server |
 | [`blob/sftpblob`](#blobsftpblob) | `sftp` | ✅ | ✅ | Any SSH server — the storage you already have on every Linux box |
 
+There is also **[`blob/multipart`](blob/multipart/README.md)**, which is not a
+driver: it assembles one blob from parts uploaded in any order, concurrently, or
+from separate processes, against *any* driver. Use it when an upload has to
+outlive the process that started it — start on one machine, write parts from
+others, commit from a third, resume after a crash. Native S3, GCS and Azure
+backends are included for server-side assembly.
+
 Each module is versioned and installed independently. Take only the one you
 need; installing `sftpblob` does not pull in `httpblob`, or vice versa.
 

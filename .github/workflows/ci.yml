@@ -90,7 +90,8 @@ jobs:
       matrix:
         # Nested modules are linted separately; golangci-lint works on one
         # module at a time. Keep in sync with allmodules.
-        module: [".", "blob/httpblob", "blob/sftpblob", "blob/multipart", "blob/multipart/s3mp"]
+        module: [".", "blob/httpblob", "blob/sftpblob", "blob/multipart",
+                 "blob/multipart/s3mp", "blob/multipart/azmp", "blob/multipart/gcsmp"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -276,6 +277,103 @@ jobs:
       - name: Server logs on failure
         if: failure()
         run: docker logs minio
+
+  azure-multipart:
+    name: Azure multipart (Azurite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+
+      # azmp stages blocks and commits a block list, which is server behaviour
+      # no fake reproduces: block IDs must all decode to the same length, and
+      # uncommitted blocks have to survive between calls.
+      - name: Start Azurite
+        run: |
+          docker run -d --name azurite -p 10000:10000 \
+            mcr.microsoft.com/azure-storage/azurite \
+            azurite-blob --blobHost 0.0.0.0
+
+      - name: Wait for Azurite and create the container
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null "http://127.0.0.1:10000/devstoreaccount1?comp=list" \
+               || curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:10000/" | grep -qE '400|403'; then
+              echo "azurite is up"
+              az storage container create --name mptest \
+                --connection-string "$AZURITE_CONN" >/dev/null
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "azurite did not come up"; docker logs azurite; exit 1
+        env:
+          # The well-known Azurite development account. Not a secret.
+          AZURITE_CONN: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq5ZWpVLwDEXTQrLBg==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+
+      - name: Multipart conformance against Azurite
+        env:
+          AZMP_TEST_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq5ZWpVLwDEXTQrLBg==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+          AZMP_TEST_CONTAINER: mptest
+          AZURE_STORAGE_ACCOUNT: devstoreaccount1
+          AZURE_STORAGE_KEY: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq5ZWpVLwDEXTQrLBg=="
+          AZURE_STORAGE_DOMAIN: "http://127.0.0.1:10000/devstoreaccount1"
+          AZURE_STORAGE_PROTOCOL: http
+          AZURE_STORAGE_IS_CDN: "false"
+        run: cd blob/multipart/azmp && go test ./... -count=1 -run TestConformanceAzure -v
+
+      - name: Server logs on failure
+        if: failure()
+        run: docker logs azurite
+
+  gcs-multipart:
+    name: GCS multipart (fake-gcs-server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+
+      # gcsmp assembles with server-side compose, including the tree it builds
+      # past the 32-source limit. That is entirely server behaviour.
+      - name: Start fake-gcs-server
+        run: |
+          docker run -d --name fakegcs -p 4443:4443 \
+            fsouza/fake-gcs-server:latest \
+            -scheme http -port 4443 -public-host 127.0.0.1:4443 \
+            -external-url http://127.0.0.1:4443
+
+      - name: Wait for fake-gcs-server and create the bucket
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null "http://127.0.0.1:4443/storage/v1/b"; then
+              echo "fake-gcs-server is up"
+              curl -sf -X POST "http://127.0.0.1:4443/storage/v1/b?project=test" \
+                -H 'Content-Type: application/json' \
+                -d '{"name":"mptest"}' >/dev/null
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "fake-gcs-server did not come up"; docker logs fakegcs; exit 1
+
+      - name: Multipart conformance against fake-gcs-server
+        env:
+          GCSMP_TEST_BUCKET: mptest
+          # Both the storage client and gcsblob honour this.
+          STORAGE_EMULATOR_HOST: "127.0.0.1:4443"
+        run: cd blob/multipart/gcsmp && go test ./... -count=1 -run TestConformanceGCS -v
+
+      - name: Server logs on failure
+        if: failure()
+        run: docker logs fakegcs
 
   upstream:
     name: Build against gocloud.dev@master
