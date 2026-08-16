@@ -1,0 +1,23 @@
+# Everything in this repository is committed with LF endings.
+#
+# This is not cosmetic. `allmodules` is read at runtime by the CI workflow:
+#
+#     sed -e '/^#/d' allmodules | awk '{print $1}' | while read -r dir; do
+#       (cd "$dir" && go test ./...)
+#
+# With CRLF, $dir ends in a carriage return, `cd` fails, and `set -e` kills the
+# job in milliseconds with no output — which is exactly how it failed once.
+# Editing a file from a Windows tool that translates newlines is enough to
+# reintroduce it, so it is enforced here rather than left to habit.
+* text=auto eol=lf
+
+# Files that must never be translated, whatever the platform.
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+allmodules  text eol=lf
+*.go        text eol=lf
+
+# Golden files are compared byte for byte.
+*.golden    -text
+testdata/** -text

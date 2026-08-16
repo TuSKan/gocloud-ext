@@ -1,0 +1,26 @@
+// The modules in this repository are developed together, so building and
+// testing here must use the code in the tree rather than the last published
+// tag of each sibling.
+//
+// Without this, CI silently tested the wrong thing. blob/multipart/s3mp
+// requires blob/multipart v0.1.0, and blob/multipart requires
+// blob/httpblob v0.1.0, so a fix committed to httpblob was invisible to the
+// multipart tests and a fix to the conformance suite was invisible to s3mp.
+// Both jobs failed against code that had already been corrected in the same
+// commit.
+//
+// This file is local to the repository. It is not consulted by anything that
+// depends on these modules, so the published go.mod files still resolve
+// through the proxy exactly as a consumer sees them, with no replace
+// directives. Consumability is verified from outside the repo, not from here.
+go 1.25.8
+
+use (
+	.
+	./blob/httpblob
+	./blob/multipart
+	./blob/multipart/azmp
+	./blob/multipart/gcsmp
+	./blob/multipart/s3mp
+	./blob/sftpblob
+)
