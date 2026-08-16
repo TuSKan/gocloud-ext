@@ -529,15 +529,28 @@ func (b *bucket) ensureCollections(ctx context.Context, escapedPath string) erro
 	return nil
 }
 
-// mkcol creates a collection. An existing collection is not an error: RFC 4918
-// §9.3.1 has the server answer 405 when the resource already exists.
+// mkcol creates a collection. An existing collection is not an error.
+//
+// RFC 4918 §9.3.1 has the server answer 405 when the resource already exists,
+// and most do. Apache mod_dav instead answers 301, redirecting to the
+// trailing-slash form of the collection URL, which also means "it is already
+// there". httpblob does not follow redirects on a mutating method — Go rewrites
+// a redirected non-GET into a GET, which would silently turn this into
+// something else entirely — so the 301 arrives here as an error and has to be
+// recognised rather than followed.
+//
+// Missing this is not hypothetical: a second bucket handle starts with an empty
+// created-collection cache, so every write into a collection some other handle
+// already made failed against Apache until 301 was accepted here.
 func (b *bucket) mkcol(ctx context.Context, rawURL string) error {
 	resp, err := b.do(ctx, func() (*http.Request, error) {
 		return b.newRequest(ctx, methodMkcol, rawURL, nil)
 	})
 	if err != nil {
-		if b.ErrorCode(err) == gcerrors.Unimplemented {
-			// 405: already exists.
+		switch statusOf(err) {
+		case http.StatusMethodNotAllowed,
+			http.StatusMovedPermanently, http.StatusPermanentRedirect,
+			http.StatusFound:
 			return nil
 		}
 		return err
