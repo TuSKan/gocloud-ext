@@ -19,9 +19,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"os"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
@@ -29,8 +32,7 @@ import (
 	"github.com/TuSKan/gocloud-ext/blob/multipart/azmp"
 	"github.com/TuSKan/gocloud-ext/blob/multipart/mptest"
 	"gocloud.dev/blob"
-
-	_ "gocloud.dev/blob/azureblob"
+	"gocloud.dev/blob/azureblob"
 )
 
 // Environment pointing the suite at an Azure Blob endpoint. CI runs Azurite;
@@ -38,7 +40,44 @@ import (
 const (
 	envConnString = "AZMP_TEST_CONNECTION_STRING"
 	envContainer  = "AZMP_TEST_CONTAINER"
+
+	// envAPIVersion pins the x-ms-version the SDK sends. Needed only for
+	// emulators; see forceAPIVersion.
+	envAPIVersion = "AZMP_TEST_API_VERSION"
 )
+
+// forceAPIVersion overrides the x-ms-version header the SDK negotiates.
+//
+// The Azure SDK advertises a service version newer than any released Azurite
+// implements. Azurite rejects it outright, and starting it with
+// --skipApiVersionCheck only gets the request past the version gate: the
+// shared-key signature is then computed over a version the emulator does not
+// model, and it answers 403 AuthorizationFailure. Pinning the header to a
+// version Azurite knows makes the two agree.
+//
+// This is a per-call policy on purpose. Per-call policies run before the
+// shared-key credential policy, so the signature is computed over the header
+// as overridden here; a per-retry policy would run after signing and produce
+// the same 403 it is meant to avoid.
+//
+// It is applied only when envAPIVersion is set, so a run against real Azure
+// uses whatever the SDK would normally send.
+type forceAPIVersion struct{ version string }
+
+func (p forceAPIVersion) Do(req *policy.Request) (*http.Response, error) {
+	req.Raw().Header.Set("x-ms-version", p.version)
+	return req.Next()
+}
+
+// clientOptions returns the options every client in this test is built with, so
+// that azmp's uploads and azureblob's read-back speak the same service version.
+func clientOptions() azcore.ClientOptions {
+	var opts azcore.ClientOptions
+	if v := os.Getenv(envAPIVersion); v != "" {
+		opts.PerCallPolicies = []policy.Policy{forceAPIVersion{version: v}}
+	}
+	return opts
+}
 
 // TestConformanceAzure runs the suite against a real Azure Blob implementation.
 //
@@ -52,12 +91,14 @@ func TestConformanceAzure(t *testing.T) {
 		t.Skipf("set %s and %s to run conformance against an Azure Blob endpoint", envConnString, envContainer)
 	}
 
-	// Create the container here rather than in the CI script. Doing it from
-	// the shell meant a second client — the Azure CLI — whose negotiated
-	// x-ms-version had to agree with the emulator's, and that mismatch is what
-	// broke first. This client is one the test already needs.
+	// One container client is the root of everything here: the container is
+	// created through it, azmp's per-blob clients are derived from it, and
+	// azureblob reads through it. Derived clients inherit its pipeline, so the
+	// version policy above applies to every request the test makes rather than
+	// only the ones built directly.
 	ctx := context.Background()
-	cc, err := container.NewClientFromConnectionString(conn, containerName, nil)
+	cc, err := container.NewClientFromConnectionString(conn, containerName,
+		&container.ClientOptions{ClientOptions: clientOptions()})
 	if err != nil {
 		t.Fatalf("building the container client: %v", err)
 	}
@@ -74,50 +115,40 @@ func TestConformanceAzure(t *testing.T) {
 	prefix := fmt.Sprintf("mp-%s/", hex.EncodeToString(buf[:]))
 	loc := multipart.Location{Bucket: containerName, Prefix: prefix}
 
-	bucketURL := fmt.Sprintf("azblob://%s?prefix=%s", containerName, prefix)
-
 	mptest.RunConformanceTests(t, func(ctx context.Context, t *testing.T) (mptest.Harness, error) {
-		return &azHarness{conn: conn, loc: loc, url: bucketURL}, nil
+		return &azHarness{cc: cc, loc: loc, prefix: prefix}, nil
 	})
 }
 
 type azHarness struct {
-	conn    string
+	cc      *container.Client
 	loc     multipart.Location
-	url     string
+	prefix  string
 	buckets []*blob.Bucket
 }
 
 // blobClient builds a client for one blob. azmp works on a single blob at a
 // time because Azure's block list belongs to the blob, not to a session.
-func (h *azHarness) blobClient(key string) (*blockblob.Client, error) {
-	name := multipart.ObjectName(h.loc, key, azmp.EscapeKey)
-	return blockblob.NewClientFromConnectionString(h.conn, h.loc.Bucket, name, nil)
+func (h *azHarness) blobClient(key string) *blockblob.Client {
+	return h.cc.NewBlockBlobClient(multipart.ObjectName(h.loc, key, azmp.EscapeKey))
 }
 
 func (h *azHarness) NewUploader(ctx context.Context, t *testing.T, key string, opts *multipart.Options) (multipart.Uploader, error) {
-	c, err := h.blobClient(key)
-	if err != nil {
-		return nil, err
-	}
-	return azmp.NewUploader(ctx, c, h.loc, key, opts)
+	return azmp.NewUploader(ctx, h.blobClient(key), h.loc, key, opts)
 }
 
 func (h *azHarness) Open(ctx context.Context, t *testing.T, key, uploadID string) (multipart.Uploader, error) {
-	c, err := h.blobClient(key)
-	if err != nil {
-		return nil, err
-	}
-	return azmp.Open(ctx, c, h.loc, key, uploadID, nil)
+	return azmp.Open(ctx, h.blobClient(key), h.loc, key, uploadID, nil)
 }
 
 func (h *azHarness) Bucket(ctx context.Context, t *testing.T) (*blob.Bucket, error) {
-	b, err := blob.OpenBucket(ctx, h.url)
+	b, err := azureblob.OpenBucket(ctx, h.cc, nil)
 	if err != nil {
 		return nil, err
 	}
-	h.buckets = append(h.buckets, b)
-	return b, nil
+	pb := blob.PrefixedBucket(b, h.prefix)
+	h.buckets = append(h.buckets, pb)
+	return pb, nil
 }
 
 func (h *azHarness) Close() {

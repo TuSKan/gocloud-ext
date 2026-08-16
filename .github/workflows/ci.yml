@@ -295,23 +295,6 @@ jobs:
   azure-multipart:
     name: Azure multipart (Azurite)
     runs-on: ubuntu-latest
-    # Not yet stabilised, and deliberately non-blocking until it is.
-    #
-    # The Azure SDK negotiates x-ms-version 2026-04-06, which no released
-    # Azurite accepts; --skipApiVersionCheck gets the request past the version
-    # gate but the shared-key signature is then computed over a version the
-    # emulator does not model, and it answers 403 AuthorizationFailure.
-    #
-    # Fixing it means forcing an older service version into two clients — the
-    # one this test builds and the one gocloud.dev/blob/azureblob builds for
-    # the read-back — and azureblob offers no hook for that from a bucket URL.
-    # That needs iterating against a local Azurite, which is not possible from
-    # this machine, so guessing at it in CI would just burn runs.
-    #
-    # azmp itself is not unverified: its escaping golden test is checked
-    # against azureblob's real escapeKey, and its block-ID width and round trip
-    # are covered. What is missing is the end-to-end run.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -353,6 +336,12 @@ jobs:
         env:
           AZMP_TEST_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq5ZWpVLwDEXTQrLBg==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
           AZMP_TEST_CONTAINER: mptest
+          # The SDK negotiates a version no released Azurite implements, and
+          # --skipApiVersionCheck alone still leaves the shared-key signature
+          # computed over a version the emulator does not model (403). Pinning
+          # it makes both sides agree; the test applies this to every client it
+          # builds, including the one azureblob reads through.
+          AZMP_TEST_API_VERSION: "2023-11-03"
           AZURE_STORAGE_ACCOUNT: devstoreaccount1
           AZURE_STORAGE_KEY: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq5ZWpVLwDEXTQrLBg=="
           AZURE_STORAGE_DOMAIN: "http://127.0.0.1:10000/devstoreaccount1"
