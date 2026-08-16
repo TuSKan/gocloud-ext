@@ -422,6 +422,12 @@ jobs:
           go-version: stable
           cache-dependency-path: "**/go.sum"
       - name: Upgrade and test every driver module
+        # GOWORK=off on purpose. Every other job uses the workspace so it
+        # tests the tree; this one asks "does each module still build the way
+        # a consumer resolves it", which means honouring the versions in its
+        # own go.mod rather than the sibling sources next door.
+        env:
+          GOWORK: "off"
         run: |
           set -euo pipefail
           sed -e '/^#/d' -e '/^$/d' allmodules | awk '{print $1}' | while read -r dir; do
