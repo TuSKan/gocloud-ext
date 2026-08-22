@@ -102,7 +102,11 @@ jobs:
           cache-dependency-path: "**/go.sum"
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12
+          # v2.13 is the first release built against Go 1.27. The job resolves
+          # go-version: stable, which is now 1.27, and v2.12 cannot typecheck
+          # that standard library - it rejects math/rand/v2 with "method must
+          # have no type parameters" and every module fails identically.
+          version: v2.13
           working-directory: ${{ matrix.module }}
 
   interop:
