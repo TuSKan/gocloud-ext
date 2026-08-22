@@ -519,6 +519,43 @@ func isRedirect(err error) bool {
 }
 
 // statusOf returns the HTTP status carried by err, or 0 if it isn't an *Error.
+// headRefused reports whether a status means the server will not answer HEAD,
+// as opposed to meaning the object is not there.
+//
+// The distinction decides whether falling back to a ranged GET is worth a
+// round trip. Three statuses say the method rather than the object is the
+// problem:
+//
+//   - 405 Method Not Allowed is the canonical one, and what RFC 9110 section
+//     15.5.6 describes for a target that does not support the method.
+//   - 501 Not Implemented is what a server sends when it does not implement
+//     the method at all.
+//   - 403 Forbidden is what a good deal of deployed infrastructure sends in
+//     practice: reverse proxies, API gateways and WAFs that route only GET
+//     commonly reject HEAD as forbidden rather than as unsupported. Harvard
+//     Dataverse, which serves a large share of the world's archived research
+//     data, does exactly this - HEAD is 403 while ranged GET is served
+//     normally, with Content-Range and an ETag.
+//
+// 403 is the one that could be read either way, and including it costs at most
+// one wasted request: when the refusal is genuine the ranged GET fails too,
+// and headObject then reports the original HEAD error rather than the
+// fallback's. So a real refusal stays a real refusal.
+//
+// 404 is deliberately absent. An object that is not there must fail on the
+// HEAD, or every missing key costs a pointless GET and reports a confusing
+// error.
+func headRefused(status int) bool {
+	switch status {
+	case http.StatusForbidden,
+		http.StatusMethodNotAllowed,
+		http.StatusNotImplemented:
+		return true
+	default:
+		return false
+	}
+}
+
 func statusOf(err error) int {
 	var httpErr *Error
 	if errors.As(err, &httpErr) {
@@ -905,7 +942,8 @@ func (b *bucket) statObject(ctx context.Context, objURL string) (http.Header, in
 
 // headObject returns the response headers and size for the object at objURL.
 // Servers that disallow HEAD are handled by falling back to a one-byte ranged
-// GET, which reports the full size in Content-Range.
+// GET, which reports the full size in Content-Range. See headRefused for which
+// statuses count as disallowing it.
 func (b *bucket) headObject(ctx context.Context, objURL string) (http.Header, int64, error) {
 	var headHeader http.Header
 	resp, err := b.do(ctx, func() (*http.Request, error) {
@@ -920,7 +958,7 @@ func (b *bucket) headObject(ctx context.Context, objURL string) (http.Header, in
 		// through to the ranged GET, whose Content-Range carries the total
 		// even when Content-Length is absent.
 		headHeader = resp.Header
-	} else if statusOf(err) != http.StatusMethodNotAllowed {
+	} else if !headRefused(statusOf(err)) {
 		return nil, 0, err
 	}
 
