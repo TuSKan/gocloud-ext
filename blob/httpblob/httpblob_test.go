@@ -472,30 +472,96 @@ func TestServerIgnoresRange(t *testing.T) {
 	}
 }
 
-// TestHeadNotAllowed covers servers that reject HEAD; Attributes falls back to
-// a one-byte ranged GET and reads the size from Content-Range.
-func TestHeadNotAllowed(t *testing.T) {
+// TestHeadRefused covers servers that reject HEAD; Attributes falls back to a
+// one-byte ranged GET and reads the size from Content-Range.
+//
+// The statuses differ by which part of the stack is refusing. 405 is what RFC
+// 9110 describes and what an origin server sends. 501 is a server that does
+// not implement the method. 403 is what a good deal of deployed
+// infrastructure sends in practice - reverse proxies, API gateways and WAFs
+// that route only GET - and Harvard Dataverse, which serves a large share of
+// the world's archived research data, answers HEAD that way while serving
+// ranged GET normally.
+func TestHeadRefused(t *testing.T) {
 	const content = "hello world"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead {
-			http.Error(w, "HEAD not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-0/%d", len(content)))
-		w.Header().Set("Content-Length", "1")
-		w.WriteHeader(http.StatusPartialContent)
-		_, _ = io.WriteString(w, content[:1])
+	for _, status := range []int{
+		http.StatusForbidden,
+		http.StatusMethodNotAllowed,
+		http.StatusNotImplemented,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodHead {
+					http.Error(w, "no HEAD here", status)
+					return
+				}
+				w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+				w.Header().Set("ETag", `"abc123"`)
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-0/%d", len(content)))
+				w.Header().Set("Content-Length", "1")
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = io.WriteString(w, content[:1])
+			}))
+			defer srv.Close()
+			b := openReadOnly(t, srv)
+
+			attrs, err := b.Attributes(context.Background(), "blob.txt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if attrs.Size != int64(len(content)) {
+				t.Errorf("got Size %d want %d", attrs.Size, len(content))
+			}
+			if attrs.ETag != `"abc123"` {
+				t.Errorf("got ETag %q want %q", attrs.ETag, `"abc123"`)
+			}
+		})
+	}
+}
+
+// TestHeadRefusedGenuinely covers a server where 403 means what it says.
+//
+// Falling back on 403 is only safe if a real refusal stays one. The ranged GET
+// fails the same way, and headObject then reports the original HEAD error, so
+// the fallback costs a wasted request and never a wrong answer.
+func TestHeadRefusedGenuinely(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "denied", http.StatusForbidden)
 	}))
 	defer srv.Close()
 	b := openReadOnly(t, srv)
 
-	attrs, err := b.Attributes(context.Background(), "blob.txt")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := b.Attributes(context.Background(), "blob.txt"); err == nil {
+		t.Fatal("Attributes succeeded against a server that forbids everything")
+	} else if code := gcerrors.Code(err); code != gcerrors.PermissionDenied {
+		t.Errorf("got code %v want PermissionDenied", code)
 	}
-	if attrs.Size != int64(len(content)) {
-		t.Errorf("got Size %d want %d", attrs.Size, len(content))
+}
+
+// TestHeadNotFoundDoesNotFallBack covers the status deliberately left out of
+// the fallback.
+//
+// An object that is not there has to fail on the HEAD. Retrying it as a ranged
+// GET would cost a pointless round trip for every missing key and report the
+// failure of the fallback rather than the absence of the object.
+func TestHeadNotFoundDoesNotFallBack(t *testing.T) {
+	var gets int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			gets++
+		}
+		http.Error(w, "no such object", http.StatusNotFound)
+	}))
+	defer srv.Close()
+	b := openReadOnly(t, srv)
+
+	if _, err := b.Attributes(context.Background(), "missing.txt"); err == nil {
+		t.Fatal("Attributes succeeded for a missing object")
+	} else if code := gcerrors.Code(err); code != gcerrors.NotFound {
+		t.Errorf("got code %v want NotFound", code)
+	}
+	if gets != 0 {
+		t.Errorf("a missing object cost %d GET requests; 404 must not fall back", gets)
 	}
 }
 
