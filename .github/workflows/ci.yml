@@ -55,6 +55,13 @@ jobs:
             (cd "$dir" && go vet ./...)
           done
 
+      # A go directive is raised by `go mod tidy` and never lowered again, so
+      # one that has outlived its reason stays for ever and asks every consumer
+      # for a toolchain they do not need. See the script for why that travels
+      # past this repository.
+      - name: go directives match their dependencies
+        run: bash .github/scripts/check-go-directives.sh
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
