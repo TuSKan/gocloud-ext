@@ -463,6 +463,14 @@ jobs:
             # non-root module, which is a trap waiting to fire.
             if [ "$dir" = "." ]; then continue; fi
             echo "::group::gocloud.dev@master in $dir"
-            (cd "$dir" && go get gocloud.dev@master && go build ./... && go test ./... -count=1)
+            # go mod tidy between the upgrade and the build, because go get
+            # updates requirements for the packages it can see and a newer
+            # upstream can pull a fresh indirect into a TEST build it cannot.
+            # Without it the job goes red on "updates to go.mod needed", which
+            # is a missing requirement rather than the driver-interface break
+            # this job exists to report -- a false signal on the one job whose
+            # whole value is that its signal is trustworthy. Nothing is
+            # committed: the tidy happens in the runner's checkout.
+            (cd "$dir" && go get gocloud.dev@master && go mod tidy && go build ./... && go test ./... -count=1)
             echo "::endgroup::"
           done
