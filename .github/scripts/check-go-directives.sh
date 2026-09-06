@@ -1,97 +1,107 @@
 #!/usr/bin/env bash
 #
-# Every module's `go` directive must be exactly what its dependencies force,
-# and no more.
+# Every module in this repository declares the same `go` directive, and that
+# directive is the highest any of their dependencies force.
 #
-# # Why this is worth a check
+# # Why one number rather than the minimum each module could get away with
 #
-# `go mod tidy` raises a module's directive to the highest any dependency
-# declares, and never lowers it again. So a directive that was once necessary
-# stays after the reason goes away, and nothing complains — the module simply
-# asks every consumer for a newer toolchain than it needs, for ever.
+# The modules here are released and consumed together. A caller reaching any of
+# them reaches the root module too — it holds internal/escape and
+# internal/useragent, which every driver imports — so a per-module minimum buys
+# a consumer nothing: whichever driver they took already carries the highest
+# directive in the set, and the graph is resolved as a whole.
 #
-# That is not hypothetical here. Upstream go-cloud declares a *patch-level*
-# `go 1.25.8` on the commit these drivers pin, so the four modules that depend
-# on it inherit 1.25.8 and cannot do otherwise. The root module has no
-# dependencies at all and was declaring 1.25.8 anyway, purely because it had
-# been raised once. A consumer on 1.25.0 through 1.25.7 downloads a whole
-# toolchain to build code that needs nothing from any of those patches.
+# What it costs instead is a repository where seven modules disagree about
+# their own toolchain floor, each for a reason nobody wrote down, and where
+# raising one is a judgement call rather than a fact. One number is checkable.
 #
-# The pin matters downstream: astrogo (TuSKan/astrogo#109) inherits it and
-# cannot lower its own directive while any dependency declares more. This check
-# makes sure gocloud-ext contributes only what upstream genuinely forces, so
-# that when go-cloud tags a release carrying driver.DeleteOptions — the API
-# that keeps these drivers on a pseudo-version — the whole chain drops on its
-# own rather than staying pinned because nobody noticed it could move.
+# # Why the number is what it is
 #
-# # What it compares
+# Upstream go-cloud declares a patch-level `go 1.25.8` on the commit these
+# drivers pin, and they pin that commit because driver.DeleteOptions — part of
+# the driver.Bucket interface both httpblob and sftpblob implement — was added
+# after v0.46.0. So 1.25.8 is not a choice made here; it is the floor upstream
+# imposes, and this repository's job is to pass it on unchanged rather than to
+# add to it.
 #
-# For each module, the maximum `go` directive across its dependency graph. That
-# is exactly the floor the toolchain enforces, so declaring anything above it is
-# a choice, and declaring it accidentally is the bug this catches.
+# That is the failure this catches. `go mod tidy` raises a directive to the
+# highest any dependency declares and never lowers it again, so a module that
+# once needed more keeps asking for more after the reason has gone, silently
+# and for ever. The check makes the number a fact about the dependency graph
+# rather than a residue of whatever order things were tidied in.
 #
-# A module with no dependencies has no forced floor, so it is held to BASELINE:
-# the directive go-cloud's own tagged release declares. "The same as upstream"
-# is the rule, and for a module that depends on nothing there is nothing else to
-# be the same as.
+# The pin travels: astrogo (TuSKan/astrogo#109) inherits it and cannot lower
+# its own directive while any dependency declares more. When go-cloud tags a
+# release carrying driver.DeleteOptions, this check is what says the whole set
+# can move — and fails until it actually does.
 
 set -euo pipefail
-
-# BASELINE is what a module with no dependencies must declare: go-cloud's own
-# tagged v0.46.0. Raise it only when this repository genuinely needs a newer
-# language or standard library, never to make a check pass.
-BASELINE="1.25.0"
 
 # verMax prints the greater of two dotted versions.
 verMax() {
 	printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1
 }
 
-# The loop runs in a pipeline, so it cannot set a variable the rest of the
-# script would see. Its output is captured instead and inspected afterwards,
-# which is also what makes the whole report visible rather than only the first
-# problem.
-report="$(mktemp)"
-trap 'rm -f "$report"' EXIT
+modules() {
+	sed -e '/^#/d' -e '/^$/d' allmodules | awk '{print $1}'
+}
 
-# The same allmodules iteration every other job here uses.
-sed -e '/^#/d' -e '/^$/d' allmodules | awk '{print $1}' | while read -r dir; do
+# required is the highest directive any EXTERNAL dependency forces, which is
+# the floor the whole set has to clear.
+#
+# Our own modules are excluded, and that exclusion is the whole check. The
+# modules here depend on one another — every driver imports the root module's
+# internal packages — so counting them would make the floor rise to whatever
+# they happen to declare, and a set that had all drifted upward together would
+# report itself consistent and correct. Found by mutation: without this filter,
+# setting all seven to 1.26.0 passes.
+#
+# GOWORK=off throughout, deliberately: inside the workspace, MVS across sibling
+# members selects versions no consumer would ever see. go.work's own comment
+# says consumability has to be verified from outside the repository, and a
+# check run inside it would answer a question nobody asked.
+readonly SELF="github.com/TuSKan/gocloud-ext"
+
+required=""
+
+while read -r dir; do
+	while read -r path ver; do
+		[ -n "$ver" ] || continue
+		case "$path" in
+		"$SELF" | "$SELF"/*) continue ;;
+		esac
+		required="$(verMax "${required:-0}" "$ver")"
+	done < <(cd "$dir" && GOWORK=off go list -m -f '{{if not .Main}}{{.Path}} {{.GoVersion}}{{end}}' all 2>/dev/null)
+done < <(modules)
+
+if [ -z "$required" ]; then
+	echo "FAIL: no dependency reported a go directive; the module graph did not resolve."
+	exit 1
+fi
+
+echo "dependencies force go $required"
+
+fail=0
+
+while read -r dir; do
 	declared="$(cd "$dir" && awk '/^go /{print $2; exit}' go.mod)"
 
-	# GOWORK=off so the answer is the one a consumer resolving through the
-	# proxy gets. Inside the workspace, MVS across sibling members can select
-	# versions no consumer would see — which is why go.work's own comment says
-	# consumability must be verified from outside the repository.
-	required=""
-	while read -r ver; do
-		[ -n "$ver" ] || continue
-		required="$(verMax "${required:-0}" "$ver")"
-	done < <(cd "$dir" && GOWORK=off go list -m -f '{{if not .Main}}{{.GoVersion}}{{end}}' all 2>/dev/null)
-
-	want="${required:-$BASELINE}"
-
-	if [ "$declared" = "$want" ]; then
+	if [ "$declared" = "$required" ]; then
 		printf '  ok   %-26s go %s\n' "$dir" "$declared"
 		continue
 	fi
 
-	if [ -z "$required" ]; then
-		printf '  FAIL %-26s declares go %s, but has no dependencies; the baseline is %s\n' \
-			"$dir" "$declared" "$BASELINE"
-	else
-		printf '  FAIL %-26s declares go %s, but its dependencies require only %s\n' \
-			"$dir" "$declared" "$want"
-	fi
+	fail=1
 
-	printf '       fix: (cd %s && go mod edit -go=%s && GOWORK=off go mod tidy)\n' "$dir" "$want"
+	printf '  FAIL %-26s declares go %s, want %s\n' "$dir" "$declared" "$required"
+	printf '       fix: (cd %s && go mod edit -go=%s && GOWORK=off go mod tidy)\n' "$dir" "$required"
+done < <(modules)
 
-	# A directive BELOW the requirement is a different bug and go itself will
-	# refuse to build, so it is not this check's job to explain it.
-done | tee "$report"
-
-if grep -q '^  FAIL' "$report"; then
+if [ "$fail" -ne 0 ]; then
 	echo
-	echo "A go directive higher than its dependencies force asks every consumer for a"
-	echo "toolchain they do not need. See this script's comment for why that travels."
+	echo "Every module here declares the same go directive, and it is the one our"
+	echo "dependencies force — no higher, so we add nothing to what a consumer needs,"
+	echo "and no lower, because the toolchain would refuse to build it."
+	echo "See this script's comment for where the number comes from."
 	exit 1
 fi
